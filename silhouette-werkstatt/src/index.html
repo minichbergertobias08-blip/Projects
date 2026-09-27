@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Silhouette Werkstatt</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#e4e7eb; --panel:#f4f5f7; --panel2:#eceef1; --ink:#15181c; --muted:#5a626c; --rule:#cdd2d8;
+  --accent:#2b59c3; --accent-ink:#fff; --field:#fff; --warn:#b4540a; --hot:#e24828; --good:#2f8a4c;
+  --display:"Barlow Condensed","Arial Narrow",Arial,sans-serif;
+  --body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0f1114; --panel:#171a1f; --panel2:#1d2127; --ink:#e7e9ec; --muted:#98a1ab; --rule:#2a2f36;
+  --accent:#7f9df0; --accent-ink:#0d1220; --field:#0f1115; --warn:#f0a35a; --hot:#ff6a4a; --good:#6cc98a; color-scheme:dark;}}
+:root[data-theme="dark"]{
+  --bg:#0f1114; --panel:#171a1f; --panel2:#1d2127; --ink:#e7e9ec; --muted:#98a1ab; --rule:#2a2f36;
+  --accent:#7f9df0; --accent-ink:#0d1220; --field:#0f1115; --warn:#f0a35a; --hot:#ff6a4a; --good:#6cc98a; color-scheme:dark;}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;min-height:100%}
+body{background:var(--bg);color:var(--ink);font:14px/1.5 var(--body);padding:0 16px;padding-block:14px 24px}
+.app{max-width:1600px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+/* top bar */
+.top{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.brand{display:flex;align-items:baseline;gap:10px;margin-right:auto}
+h1{font:700 30px/1 var(--display);letter-spacing:.01em;margin:0;text-transform:uppercase}
+h1 span{color:var(--accent)}
+.brand small{font:12px var(--mono);color:var(--muted)}
+.btn,button{font:500 13px var(--body);border:1px solid var(--rule);background:var(--field);color:var(--ink);padding:7px 12px;border-radius:5px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;white-space:nowrap}
+button:hover,.btn:hover{border-color:var(--accent)}
+button:focus-visible,.btn:focus-within,input:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.primary{background:var(--accent)!important;color:var(--accent-ink)!important;border-color:var(--accent)!important}
+.btn input{display:none}
+.seg{display:inline-flex;border:1px solid var(--rule);border-radius:5px;overflow:hidden;background:var(--field)}
+.seg button{border:0;border-radius:0;border-left:1px solid var(--rule);flex:1}
+.seg button:first-child{border-left:0}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+.exports{display:flex;gap:6px;flex-wrap:wrap}
+/* layout */
+.main{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:12px;align-items:start}
+@media (max-width:980px){.main{grid-template-columns:1fr}}
+.work{display:grid;grid-template-columns:52px minmax(0,1fr);gap:10px;align-items:start}
+@media (max-width:600px){.work{grid-template-columns:1fr}}
+/* toolbar */
+.toolbar{display:flex;flex-direction:column;gap:4px;background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:5px;position:sticky;top:10px}
+@media (max-width:600px){.toolbar{flex-direction:row;flex-wrap:wrap;position:static}}
+.tool{width:40px;height:40px;padding:0;border-radius:6px;border-color:transparent;background:transparent;position:relative;color:var(--ink)}
+.tool svg{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.tool:hover{background:var(--panel2);border-color:var(--rule)}
+.tool[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.tool .k{position:absolute;right:2px;bottom:1px;font:9px/1 var(--mono);opacity:.6}
+.tsep{height:1px;background:var(--rule);margin:3px 4px}
+@media (max-width:600px){.tsep{width:1px;height:auto;margin:4px 2px}}
+/* stage */
+.canvasCol{display:flex;flex-direction:column;gap:8px;min-width:0}
+@media (min-width:981px){.work{position:sticky;top:10px}}
+.stage{position:relative;border:1px solid var(--rule);border-radius:8px;overflow:hidden;background:#dfe1e3;touch-action:none;user-select:none}
+.stage.checker{background:repeating-conic-gradient(#cfd2d6 0 25%,#eceef0 0 50%) 0 0/18px 18px}
+.stage.drop{outline:3px dashed var(--accent);outline-offset:-8px}
+.inner{position:relative;line-height:0;transform-origin:0 0;will-change:transform}
+.inner canvas{width:100%;height:auto;display:block}
+#over{position:absolute;inset:0;width:100%;height:100%}
+.quick{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.quick .hint{flex:1;min-width:200px}
+.hud{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center}
+.status{font:12px var(--mono);color:var(--muted);display:flex;gap:14px;flex-wrap:wrap;font-variant-numeric:tabular-nums}
+.status .warn{color:var(--warn)} .status .ok{color:var(--good)}
+.zoom{display:flex;gap:6px;align-items:center;font:12px var(--mono);color:var(--muted)}
+.zoom button{padding:4px 8px}
+.tip{font-size:13px;color:var(--ink);background:var(--panel);border:1px solid var(--rule);border-radius:6px;padding:8px 12px;min-height:38px}
+.tip b{color:var(--accent)}
+.prog{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--bg) 55%,transparent);backdrop-filter:blur(2px)}
+.pbox{background:var(--panel);border:1px solid var(--rule);border-radius:10px;padding:16px 20px;min-width:260px;display:flex;flex-direction:column;gap:8px;box-shadow:0 8px 30px rgba(0,0,0,.15)}
+.pbox b{font:600 15px var(--body)}
+.pbox span{font:12px var(--mono);color:var(--muted)}
+.pbar{height:6px;border-radius:3px;background:var(--panel2);overflow:hidden}
+.pbar i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s}
+.busy{position:absolute;right:10px;top:10px;font:12px var(--mono);background:var(--panel);color:var(--muted);border:1px solid var(--rule);border-radius:4px;padding:3px 8px}
+/* panel */
+aside{background:var(--panel);border:1px solid var(--rule);border-radius:8px;overflow:hidden}
+details{border-top:1px solid var(--rule)}
+details:first-child{border-top:0}
+summary{list-style:none;cursor:pointer;padding:12px 16px;display:flex;align-items:center;gap:8px;font:600 14px/1 var(--display);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"";margin-left:auto;width:8px;height:8px;border-right:1.6px solid var(--muted);border-bottom:1.6px solid var(--muted);transform:rotate(45deg);transition:transform .15s}
+details[open] summary::after{transform:rotate(-135deg)}
+summary b{font:500 11px/1 var(--mono);color:var(--accent);letter-spacing:0}
+.body{padding:0 16px 16px;display:flex;flex-direction:column;gap:10px}
+h3{margin:6px 0 0;font:600 11px/1 var(--display);letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.ctl{display:grid;grid-template-columns:1fr auto;gap:2px 8px;align-items:center}
+.ctl label{font-size:13px}
+.ctl output{font:12px var(--mono);color:var(--muted);font-variant-numeric:tabular-nums}
+.ctl input[type=range]{grid-column:1/-1;width:100%;accent-color:var(--accent)}
+.hint{font-size:12px;color:var(--muted);margin:0}
+.hint b{color:var(--ink);font-weight:600}
+.check{display:flex;gap:8px;align-items:center;font-size:13px}
+.check input{accent-color:var(--accent)}
+input[type=number]{font:13px var(--mono);background:var(--field);color:var(--ink);border:1px solid var(--rule);border-radius:4px;padding:6px 8px;width:100%}
+input[type=color]{width:36px;height:30px;border:1px solid var(--rule);border-radius:4px;background:var(--field);padding:2px}
+.fields{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.fields label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--muted)}
+.seg.full{display:flex}
+.seg.full button{padding:7px 4px;font-size:12px}
+kbd{font:11px var(--mono);border:1px solid var(--rule);border-bottom-width:2px;border-radius:3px;padding:0 4px;background:var(--field)}
+/* speichern */
+.savebar{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
+.fld{display:flex;flex-direction:column;gap:2px;font:11px var(--mono);color:var(--muted)}
+.fld input{font:500 14px var(--body);background:var(--field);color:var(--ink);border:1px solid var(--rule);border-radius:5px;padding:7px 10px;width:170px}
+.fld input.need{border-color:var(--hot);box-shadow:0 0 0 2px color-mix(in srgb,var(--hot) 35%,transparent)}
+button.big{padding:9px 16px;font-size:14px;font-weight:600}
+button.big svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linejoin:round}
+.dlrow{display:flex;gap:6px;flex-wrap:wrap}
+.dlrow button{padding:5px 9px;font-size:12px}
+.saveinfo{font-size:12px;color:var(--muted);margin:0;word-break:break-word}
+.saveinfo b{color:var(--ink)} .saveinfo .ok{color:var(--good)} .saveinfo .warn{color:var(--warn)}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:50;padding:16px}
+.modal .box{background:var(--panel);border:1px solid var(--rule);border-radius:10px;padding:18px 20px;max-width:440px;width:100%;display:flex;flex-direction:column;gap:12px;box-shadow:0 12px 40px rgba(0,0,0,.3)}
+.modal .box p{margin:0}
+.modal .row{justify-content:flex-end}
+@media (max-width:700px){.fld input{width:130px}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="modal" id="modal" hidden><div class="box" role="dialog" aria-modal="true"><p id="modalT"></p><div class="row" id="modalB"></div></div></div>
+<div class="app">
+  <header class="top">
+    <div class="brand"><h1>Silhouette <span>Werkstatt</span></h1><small>Foto → Wanddeko-Linien</small></div>
+    <div class="seg" role="group" aria-label="Ansicht">
+      <button data-view="result" aria-pressed="true">Silhouette</button>
+      <button data-view="photo" aria-pressed="false">Foto + Umriss</button>
+    </div>
+    <div class="savebar" role="group" aria-label="Speichern">
+      <label class="fld"><span>Marke</span><input id="brand" list="brandList" autocomplete="off" placeholder="z. B. Audi" spellcheck="false"></label>
+      <label class="fld"><span>Modell</span><input id="model" list="modelList" autocomplete="off" placeholder="z. B. A5 Sportback" spellcheck="false"></label>
+      <button class="primary big" id="saveBtn" title="Speichert alle gewählten Dateien auf dem NAS in 2D Auto Wandbild › Marke (Strg+S)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5z"/><path d="M8 3v6h8V3"/><rect x="8" y="13" width="8" height="6"/></svg>Speichern</button>
+    </div>
+    <datalist id="brandList"></datalist><datalist id="modelList"></datalist>
+  </header>
+
+  <div class="main">
+    <div class="work">
+      <nav class="toolbar" aria-label="Werkzeuge">
+        <button class="tool" data-tool="hand" aria-pressed="true" title="Ansehen / Verschieben (H) – Mausrad zoomt"><svg viewBox="0 0 24 24"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V12M11 11V4.5a1.5 1.5 0 0 1 3 0V12M14 11.5V6a1.5 1.5 0 0 1 3 0v8a6 6 0 0 1-6 6h-1a6 6 0 0 1-5-2.7L3.5 13.8a1.5 1.5 0 0 1 2.4-1.8L8 14"/></svg><span class="k">H</span></button>
+        <div class="tsep"></div>
+        <button class="tool" data-tool="trace" aria-pressed="false" title="Nachzeichnen (N) – Punkte setzen, glatte Kurve entsteht"><svg viewBox="0 0 24 24"><path d="M3 20c4-1 6-4 8-8"/><path d="M11 12l6-6 3 3-6 6z"/><circle cx="3" cy="20" r="1.2"/></svg><span class="k">N</span></button>
+        <button class="tool" data-tool="edit" aria-pressed="false" title="Bearbeiten (V) – Punkte und Räder verschieben"><svg viewBox="0 0 24 24"><path d="M4 18C7 7 17 7 20 18"/><rect x="2.5" y="16.5" width="3" height="3"/><rect x="18.5" y="16.5" width="3" height="3"/><rect x="10.5" y="8" width="3" height="3"/></svg><span class="k">V</span></button>
+        <button class="tool" data-tool="del" aria-pressed="false" title="Linie löschen (D) – ganze Linie anklicken"><svg viewBox="0 0 24 24"><path d="M3 19C6 12 9 9 14 7"/><path d="M15 14l6 6M21 14l-6 6"/></svg><span class="k">D</span></button>
+        <div class="tsep"></div>
+        <button class="tool" data-tool="erase" aria-pressed="false" title="Radierer (R)"><svg viewBox="0 0 24 24"><path d="M20 20H9l-5-5 10-10 7 7-8 8"/><path d="M9.5 9.5l6 6"/></svg><span class="k">R</span></button>
+        <button class="tool" data-tool="pen" aria-pressed="false" title="Freihand (S)"><svg viewBox="0 0 24 24"><path d="M3 17c3-6 6 4 9-2s5-6 9-3"/></svg><span class="k">S</span></button>
+        <button class="tool" data-tool="line" aria-pressed="false" title="Gerade (G)"><svg viewBox="0 0 24 24"><path d="M5 19L19 5"/><circle cx="5" cy="19" r="1.4"/><circle cx="19" cy="5" r="1.4"/></svg><span class="k">G</span></button>
+        <button class="tool" data-tool="circle" aria-pressed="false" title="Kreis (K) – von der Mitte ziehen"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r=".8"/></svg><span class="k">K</span></button>
+        <div class="tsep"></div>
+        <button class="tool" id="undoBtn" title="Rückgängig (Strg+Z)"><svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg></button>
+      </nav>
+
+      <div class="canvasCol">
+        <div class="quick">
+          <label class="btn primary">Neues Foto<input type="file" id="file2" accept="image/*"></label>
+          <div class="seg" role="group" aria-label="Stil">
+            <button data-preset="min" aria-pressed="false">Minimal</button>
+            <button data-preset="mid" aria-pressed="true">Mittel</button>
+            <button data-preset="det" aria-pressed="false">Detail</button>
+          </div>
+          <div class="seg" role="group" aria-label="Strich">
+            <button data-stroke="uniform" aria-pressed="false" title="Alle Linien gleich dick">Gleich</button>
+            <button data-stroke="tiered" aria-pressed="false" title="Umriss dick, Details dünner">Abgestuft</button>
+            <button data-stroke="brush" aria-pressed="true" title="Abgestuft + spitz auslaufende Enden wie gezeichnet">Pinsel</button>
+          </div>
+          <span class="hint">Foto einfach hier reinziehen oder mit <kbd>Strg</kbd>+<kbd>V</kbd> einfügen – der Rest passiert automatisch.</span>
+        </div>
+        <div class="stage" id="stage">
+          <div class="inner" id="inner">
+            <canvas id="view"></canvas>
+            <canvas id="over"></canvas>
+          </div>
+          <div class="busy" id="busy" hidden>rechnet …</div>
+          <div class="prog" id="prog" hidden><div class="pbox"><b id="progT">KI stellt das Auto frei …</b><div class="pbar"><i id="progB"></i></div><span id="progS">Schritt 1 von 3</span></div></div>
+        </div>
+        <div class="hud">
+          <div class="status" id="status"></div>
+          <div class="zoom"><button id="zoomOut" title="Verkleinern">−</button><span id="zoomO">100 %</span><button id="zoomIn" title="Vergrößern">+</button><button id="zoomFit" title="Ganzes Bild (F)">Einpassen</button></div>
+        </div>
+        <div class="tip" id="tip"></div>
+      </div>
+    </div>
+
+    <aside>
+      <details open>
+        <summary><b>1</b>Foto &amp; Bereich</summary>
+        <div class="body">
+          <div class="row">
+            <label class="btn primary">Foto wählen<input type="file" id="file" accept="image/*"></label>
+            <button id="demoBtn">Beispiel</button>
+          </div>
+          <p class="hint">Oder aufs Bild ziehen bzw. <kbd>Strg</kbd>+<kbd>V</kbd>. Seitenansicht klappt am besten.</p>
+          <label class="check"><input type="checkbox" id="aiOn" checked> Auto automatisch freistellen (KI)</label>
+          <p class="hint" id="aiInfo">KI wird geladen …</p>
+          <div class="row">
+            <button id="polyBtn">Bereich selbst festlegen</button>
+            <button id="polyClear">Entfernen</button>
+          </div>
+          <div class="ctl"><label for="res">Detailgrad (Arbeitsbreite Auto)</label><output id="resO"></output>
+            <input type="range" id="res" min="800" max="2600" step="100" value="1600"></div>
+        </div>
+      </details>
+
+      <details open>
+        <summary><b>2</b>Automatik</summary>
+        <div class="body">
+          <label class="check"><input type="checkbox" id="autoOn" checked> Linien automatisch erkennen</label>
+          <label class="check"><input type="checkbox" id="artOn" checked> KI-Zeichner (zeichnet wie ein Illustrator)</label>
+          <label class="check"><input type="checkbox" id="teedOn" checked> KI-Kantenerkennung (TEED, für Umriss &amp; Räder)</label>
+          <label class="check"><input type="checkbox" id="darkBoost" checked> Dunkle Autos aufhellen</label>
+          <label class="check"><input type="checkbox" id="outlineOn" checked> Außenkontur aus Freistellung</label>
+          <label class="check"><input type="checkbox" id="valleyOn"> Zusätzliche Fugen-Suche (ohne KI)</label>
+          <div class="seg full" role="group" aria-label="Stil">
+            <button data-preset="min" aria-pressed="false">Minimal</button>
+            <button data-preset="mid" aria-pressed="true">Mittel</button>
+            <button data-preset="det" aria-pressed="false">Detail</button>
+          </div>
+          <div class="ctl"><label for="maxLines">Anzahl Linien</label><output id="maxLinesO"></output>
+            <input type="range" id="maxLines" min="5" max="200" step="1" value="45"></div>
+          <div class="ctl"><label for="hi">Empfindlichkeit</label><output id="hiO"></output>
+            <input type="range" id="hi" min="8" max="120" step="1" value="34"></div>
+          <details class="sub">
+            <summary style="padding:6px 0;font-size:12px">Feintuning</summary>
+            <div class="body" style="padding:0">
+              <label class="check"><input type="checkbox" id="detailLoops" checked> Kleine Details erkennen (Griffe, Tankdeckel …)</label>
+              <label class="check"><input type="checkbox" id="cleanWin" checked> Scheiben leer lassen (kein Innenraum)</label>
+              <label class="check"><input type="checkbox" id="struct" checked> Nur markante Kanten (Mehrskalen-Filter)</label>
+              <div class="ctl"><label for="calm">Spiegelungen beruhigen</label><output id="calmO"></output>
+                <input type="range" id="calm" min="0" max="100" step="1" value="60"></div>
+              <div class="ctl"><label for="sigma">Glättung Foto</label><output id="sigmaO"></output>
+                <input type="range" id="sigma" min="0.6" max="6" step="0.1" value="2.2"></div>
+              <div class="ctl"><label for="lo">Linien verlängern</label><output id="loO"></output>
+                <input type="range" id="lo" min="5" max="95" step="1" value="35"></div>
+              <div class="ctl"><label for="weak">Kurze &amp; unruhige Linien weg</label><output id="weakO"></output>
+                <input type="range" id="weak" min="0" max="500" step="5" value="150"></div>
+              <div class="ctl"><label for="struct2">Anschluss-Linien bevorzugen</label><output id="struct2O"></output>
+                <input type="range" id="struct2" min="0" max="2" step="0.1" value="1"></div>
+              <div class="ctl"><label for="calmD">Unruhige Zonen vereinfachen</label><output id="calmDO"></output>
+                <input type="range" id="calmD" min="0" max="3" step="0.1" value="1"></div>
+              <div class="ctl"><label for="dup">Doppellinien zusammenfassen</label><output id="dupO"></output>
+                <input type="range" id="dup" min="0" max="30" step="1" value="14"></div>
+              <div class="ctl"><label for="gap">Unterbrechungen verbinden</label><output id="gapO"></output>
+                <input type="range" id="gap" min="0" max="80" step="1" value="30"></div>
+              <div class="ctl"><label for="dock">Linienenden andocken</label><output id="dockO"></output>
+                <input type="range" id="dock" min="0" max="120" step="1" value="26"></div>
+              <div class="ctl"><label for="spur">Fransen entfernen</label><output id="spurO"></output>
+                <input type="range" id="spur" min="0" max="60" step="1" value="20"></div>
+              <div class="ctl"><label for="minLen">Krümel entfernen</label><output id="minLenO"></output>
+                <input type="range" id="minLen" min="0" max="400" step="5" value="40"></div>
+            </div>
+          </details>
+        </div>
+      </details>
+
+      <details open>
+        <summary><b>3</b>Räder &amp; Boden</summary>
+        <div class="body">
+          <div class="seg full" role="group" aria-label="Räder">
+            <button data-wheel="orig" aria-pressed="false">Foto</button>
+            <button data-wheel="circle" aria-pressed="false">Kreis</button>
+            <button data-wheel="arc" aria-pressed="true">Bogen</button>
+            <button data-wheel="none" aria-pressed="false">Leer</button>
+          </div>
+          <p class="hint" id="wheelInfo">Räder werden automatisch erkannt und durch saubere Kreise ersetzt. Mit <b>Bearbeiten</b> Mitte und Größe ziehen.</p>
+          <div class="row"><button id="wheelRedetect">Räder neu erkennen</button></div>
+          <label class="check"><input type="checkbox" id="ground"> Bodenlinie (hält das Teil zusammen)</label>
+          <label class="check"><input type="checkbox" id="shadowOn" checked> Schatten unter dem Auto ignorieren</label>
+        </div>
+      </details>
+
+      <details open>
+        <summary><b>4</b>Linienstil</summary>
+        <div class="body">
+          <div class="ctl"><label for="thick">Linienstärke</label><output id="thickO"></output>
+            <input type="range" id="thick" min="0.5" max="14" step="0.5" value="3.5"></div>
+          <div class="ctl"><label for="curve">Kurven glätten</label><output id="curveO"></output>
+            <input type="range" id="curve" min="0" max="40" step="1" value="22"></div>
+          <div class="ctl"><label for="straight">Kurven straffen</label><output id="straightO"></output>
+            <input type="range" id="straight" min="0.3" max="8" step="0.1" value="4"></div>
+          <label class="check"><input type="checkbox" id="connectAll" checked> Alles zu einem Teil verbinden (Laser/3D-Druck)</label>
+          <label class="check"><input type="checkbox" id="largest"> Nur größtes zusammenhängendes Teil</label>
+          <h3>Werkzeuge</h3>
+          <label class="check"><input type="checkbox" id="snap" checked> Punkte an Kanten einrasten</label>
+          <label class="check"><input type="checkbox" id="underlay"> Foto unter Silhouette einblenden</label>
+          <div class="ctl"><label for="brush">Radierer-Größe</label><output id="brushO"></output>
+            <input type="range" id="brush" min="6" max="160" step="2" value="40"></div>
+          <div class="row"><button id="clearEdits">Alle eigenen Änderungen löschen</button></div>
+        </div>
+      </details>
+
+      <details open>
+        <summary><b>5</b>Speichern &amp; Export</summary>
+        <div class="body">
+          <h3>Speicherort (NAS)</h3>
+          <p class="saveinfo" id="saveInfo"></p>
+          <div class="row"><button id="pickDir">Ordner wählen …</button></div>
+          <h3>Beim Speichern ablegen</h3>
+          <label class="check"><input type="checkbox" id="fSvg" checked> SVG Kontur (Laser / Plotter / 3D-Druck)</label>
+          <label class="check"><input type="checkbox" id="fStl" checked> STL (3D-Druck)</label>
+          <label class="check"><input type="checkbox" id="fPng" checked> PNG (Vorschau)</label>
+          <label class="check"><input type="checkbox" id="fLine"> SVG Linien (Mittellinien)</label>
+          <label class="check"><input type="checkbox" id="fPhoto"> Originalfoto</label>
+          <h3>Einzeln herunterladen</h3>
+          <div class="dlrow">
+            <button id="svgBtn" title="Geschlossene Flächen für Laser, Fräse und 3D-Druck">SVG Kontur</button>
+            <button id="svgLineBtn" title="Mittellinien mit Strichstärke für Plotter">SVG Linien</button>
+            <button id="pngBtn">PNG</button>
+            <button id="stlBtn" title="3D-Modell zum Drucken">STL</button>
+          </div>
+          <h3>Gerät</h3>
+          <div class="seg full" role="group" aria-label="Gerät">
+            <button data-dev="free" aria-pressed="true">Frei</button>
+            <button data-dev="p1s" aria-pressed="false" title="Bambu Lab P1S – Druckbett 256 × 256 mm">P1S</button>
+            <button data-dev="xtool" aria-pressed="false" title="xTool M1 Ultra – Arbeitsfläche 300 × 300 mm">xTool</button>
+            <button data-dev="joy" aria-pressed="false" title="Cricut Joy – max. 114 mm breit (4,5 Zoll), Länge fast beliebig">Joy</button>
+          </div>
+          <label class="check"><input type="checkbox" id="tileOn" checked> Zu große Motive in Teile aufteilen</label>
+          <div class="row"><button id="fitDev">Größe ans Gerät anpassen</button></div>
+          <p class="hint" id="devInfo">Kein Gerät gewählt – beliebige Größe.</p>
+          <div class="fields">
+            <label>Breite Endmaß (mm)<input type="number" id="mm" min="20" max="5000" value="600"></label>
+            <label>PNG-Breite (px)<input type="number" id="pngW" min="200" max="12000" value="4000"></label>
+            <label>STL-Dicke (mm)<input type="number" id="stlH" min="0.4" max="50" step="0.2" value="3"></label>
+            <label>Mindest-Strich (mm)<input type="number" id="minMM" min="0" max="10" step="0.1" value="1"></label>
+          </div>
+          <div class="row">
+            <label class="check">Linie <input type="color" id="lineCol" value="#111111"></label>
+            <label class="check">Hintergrund <input type="color" id="bgCol" value="#dfe1e3"></label>
+            <label class="check"><input type="checkbox" id="transp"> transparent</label>
+          </div>
+          <label class="check"><input type="checkbox" id="mirror"> Spiegeln (Fahrtrichtung umdrehen)</label>
+          <p class="hint"><b>SVG Kontur</b> = geschlossene Flächen für Laser, Fräse, 3D-Druck. <b>SVG Linien</b> = Mittellinien für Plotter.</p>
+        </div>
+      </details>
+    </aside>
+  </div>
+</div>
+
+<!--@SCRIPTS-->
+</body>
+</html>
