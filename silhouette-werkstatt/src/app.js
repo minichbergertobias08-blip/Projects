@@ -471,7 +471,8 @@ function windowItems(){
     let best=loops[0],ba=0;for(const l of loops){const a=Math.abs(polyArea(l));if(a>ba){ba=a;best=l;}}
     let pts=best.map(q=>[q[0]+X0,q[1]+Y0]);
     pts=gsmooth(pts,Math.max(2,3*SC),true);pts=resample(pts,true,1.5);
-    pts=snapContour(pts,Math.max(5,0.012*carLen),lineE);
+    pts=gsmooth(pts,Math.max(3,6*SC),true);pts=resample(pts,true,1.5);
+    pts=snapContour(pts,Math.max(4,0.008*carLen),lineE);
     pts=tubeFair(pts,true,Math.max(1.5,1.1*lw()),Math.max(6,26*SC));
     out.push({sm:pts,p:rdp(pts,0.6),closed:true,len:pts.length,str:2,score:1e7,user:false,protect:true,window:true});
   }
