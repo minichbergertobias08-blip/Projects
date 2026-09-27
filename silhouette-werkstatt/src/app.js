@@ -383,17 +383,57 @@ async function detectParts(im){
   const o=out[partsSess.outputNames[0]],D=o.dims[2],NC=PART_NAMES.length,a=o.data,cand=[];
   for(let j=0;j<D;j++){let bk=-1,bs=0.25;for(let k=0;k<NC;k++){const v=a[(4+k)*D+j];if(v>bs){bs=v;bk=k;}}
     if(bk<0)continue;const cx=a[j],cy=a[D+j],bw=a[2*D+j],bh=a[3*D+j];
-    cand.push({k:PART_NAMES[bk],s:bs,x0:(cx-bw/2)/sc,y0:(cy-bh/2)/sc,x1:(cx+bw/2)/sc,y1:(cy+bh/2)/sc});}
+    cand.push({k:PART_NAMES[bk],s:bs,x0:(cx-bw/2)/sc,y0:(cy-bh/2)/sc,x1:(cx+bw/2)/sc,y1:(cy+bh/2)/sc,j});}
   cand.sort((p,q)=>q.s-p.s);const keep=[];
   const iou=(p,q)=>{const ix=Math.max(0,Math.min(p.x1,q.x1)-Math.max(p.x0,q.x0)),iy=Math.max(0,Math.min(p.y1,q.y1)-Math.max(p.y0,q.y0)),I=ix*iy;return I/((p.x1-p.x0)*(p.y1-p.y0)+(q.x1-q.x0)*(q.y1-q.y0)-I);};
   for(const c2 of cand)if(keep.every(k2=>k2.k!==c2.k||iou(k2,c2)<0.5))keep.push(c2);
+  // Masken (160×160 über dem 640er-Bild) für Scheiben
+  const pr=out[partsSess.outputNames[1]];
+  if(pr){const P=pr.data,PM=pr.dims[2]*pr.dims[3],PW=pr.dims[3];
+    for(const k2 of keep){if(!/window|windshield/i.test(k2.k))continue;const m=new Float32Array(PM);
+      for(let q=0;q<32;q++){const cf=a[(4+NC+q)*D+k2.j];if(!cf)continue;for(let i=0;i<PM;i++)m[i]+=cf*P[q*PM+i];}
+      k2.mask=m;k2.mw=PW;k2.msc=sc*PW/S;}}
   return keep;
 }
 /* Räder aus der Teile-Erkennung: zwei runde Rad-Boxen → Kreise, dann Radius/Mitte an den Kanten nachjustieren */
+/* Scheibenflächen (aus der Teile-Erkennung) in Arbeitskoordinaten */
+function glassMask(){
+  if(!carParts||!img)return null;const ws=carParts.filter(p=>p.mask&&p.s>0.3);if(!ws.length)return null;
+  const nw=img.naturalWidth,nh=img.naturalHeight,ax=(crop.x1-crop.x0)*nw/W,ay=(crop.y1-crop.y0)*nh/H,m=new Uint8Array(W*H);
+  for(const p of ws){const k=p.msc,MW=p.mw;
+    const X0=Math.max(0,Math.floor((p.x0-crop.x0*nw)/ax)),X1=Math.min(W-1,Math.ceil((p.x1-crop.x0*nw)/ax)),Y0=Math.max(0,Math.floor((p.y0-crop.y0*nh)/ay)),Y1=Math.min(H-1,Math.ceil((p.y1-crop.y0*nh)/ay));
+    for(let y=Y0;y<=Y1;y++){const ny=crop.y0*nh+y*ay,my=Math.min(MW-1,Math.max(0,Math.floor(ny*k)));
+      for(let x=X0;x<=X1;x++){const nx=crop.x0*nw+x*ax,mx=Math.min(MW-1,Math.max(0,Math.floor(nx*k)));if(p.mask[my*MW+mx]>0)m[y*W+x]=1;}}}
+  return m;
+}
+/* Scheiben als geschlossene, glatte Formen (Maske der Teile-Erkennung, an die KI-Linien angelegt) */
+function windowItems(){
+  if(!carParts||!img||!lineE)return [];
+  const out=[],nw=img.naturalWidth,nh=img.naturalHeight,ax=(crop.x1-crop.x0)*nw/W,ay=(crop.y1-crop.y0)*nh/H,carLen=carBoxPx?carBoxPx.x1-carBoxPx.x0:W*0.8;
+  for(const p of carParts){if(!p.mask||p.s<0.35)continue;
+    const X0=Math.max(0,Math.floor((p.x0-crop.x0*nw)/ax)-4),X1=Math.min(W-1,Math.ceil((p.x1-crop.x0*nw)/ax)+4),Y0=Math.max(0,Math.floor((p.y0-crop.y0*nh)/ay)-4),Y1=Math.min(H-1,Math.ceil((p.y1-crop.y0*nh)/ay)+4);
+    const w=X1-X0+1,h=Y1-Y0+1;if(w<10||h<10)continue;const sub=new Uint8Array(w*h),k=p.msc,MW=p.mw;let cnt=0;
+    // Maske weich abtasten (bilinear), damit die Kontur nicht treppig wird
+    for(let y=0;y<h;y++){const my=(crop.y0*nh+(y+Y0)*ay)*k-0.5;for(let x=0;x<w;x++){const mx=(crop.x0*nw+(x+X0)*ax)*k-0.5;
+      const ix=Math.max(0,Math.min(MW-2,Math.floor(mx))),iy=Math.max(0,Math.min(MW-2,Math.floor(my))),fx=Math.min(1,Math.max(0,mx-ix)),fy=Math.min(1,Math.max(0,my-iy)),M=p.mask;
+      const v=(M[iy*MW+ix]*(1-fx)+M[iy*MW+ix+1]*fx)*(1-fy)+(M[(iy+1)*MW+ix]*(1-fx)+M[(iy+1)*MW+ix+1]*fx)*fy;
+      const gx=crop.x0*nw+(x+X0)*ax,gy=crop.y0*nh+(y+Y0)*ay;
+      if(v>0&&gx>=p.x0&&gx<=p.x1&&gy>=p.y0&&gy<=p.y1){sub[y*w+x]=1;cnt++;}}}
+    if(cnt<(0.03*carLen)**2)continue;
+    const loops=traceContours(sub,w,h);if(!loops.length)continue;
+    let best=loops[0],ba=0;for(const l of loops){const a=Math.abs(polyArea(l));if(a>ba){ba=a;best=l;}}
+    let pts=best.map(q=>[q[0]+X0,q[1]+Y0]);
+    pts=gsmooth(pts,Math.max(2,3*SC),true);pts=resample(pts,true,1.5);
+    pts=snapContour(pts,Math.max(5,0.012*carLen),lineE);
+    pts=tubeFair(pts,true,Math.max(1.5,1.1*lw()),Math.max(6,26*SC));
+    out.push({sm:pts,p:rdp(pts,0.6),closed:true,len:pts.length,str:2,score:1e7,user:false,protect:true,window:true});
+  }
+  return out;
+}
 function wheelsFromParts(){
   if(!carParts||!img)return [];
   const nw=img.naturalWidth,nh=img.naturalHeight,kx=W/((crop.x1-crop.x0)*nw),ky=H/((crop.y1-crop.y0)*nh);
-  let wh=carParts.filter(p=>/wheel/.test(p.k)&&p.s>0.3).map(p=>({x:(p.x0-crop.x0*nw)*kx,y:(p.y0-crop.y0*nh)*ky,x1:(p.x1-crop.x0*nw)*kx,y1:(p.y1-crop.y0*nh)*ky,s:p.s}));
+  let wh=carParts.filter(p=>/wheel/.test(p.k)&&p.s>0.18).map(p=>({x:(p.x0-crop.x0*nw)*kx,y:(p.y0-crop.y0*nh)*ky,x1:(p.x1-crop.x0*nw)*kx,y1:(p.y1-crop.y0*nh)*ky,s:p.s}));
   wh=wh.filter(b=>b.x1>0&&b.x<W&&b.y1>0&&b.y<H);
   // doppelte Boxen desselben Rads zusammenfassen
   wh.sort((a,b)=>b.s-a.s);const uniq=[];for(const b of wh){const cx=(b.x+b.x1)/2;if(uniq.every(u=>Math.abs((u.x+u.x1)/2-cx)>(u.x1-u.x)*0.6))uniq.push(b);}
@@ -593,13 +633,13 @@ function buildMask(){
 function maskBox(m){let x0=W,x1=-1,y0=H,y1=-1;for(let y=0;y<H;y++){const o=y*W;for(let x=0;x<W;x++)if(m[o+x]){if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y;}}return x1<0?null:{x0,x1,y0,y1};}
 function erodeMask(m,r){if(r<1)return m;const f=new Float32Array(W*H);for(let i=0;i<f.length;i++)f[i]=m[i];const b=boxBlur(f,Math.round(r)),o=new Uint8Array(W*H);for(let i=0;i<o.length;i++)o[i]=b[i]>0.9999?1:0;return o;}
 /* Kontur an echte Bildkanten ziehen (Normalensuche + robuste Glättung der Verschiebung) */
-function snapContour(pts,delta){
-  const n=pts.length;if(n<12||!magN)return pts;
+function snapContour(pts,delta,F,closedIn){
+  const n=pts.length;if(n<12||(!magN&&!F))return pts;
   const D=Math.max(2,Math.ceil(delta)),m=2*D+1,nor=new Float32Array(2*n),cost=new Float32Array(n*m);
   for(let i=0;i<n;i++){
     const a=pts[(i-4+n)%n],b=pts[(i+4)%n];let tx=b[0]-a[0],ty=b[1]-a[1];const l=Math.hypot(tx,ty)||1;tx/=l;ty/=l;const nx=-ty,ny=tx;nor[2*i]=nx;nor[2*i+1]=ny;
     for(let o=-D;o<=D;o++){const x=pts[i][0]+nx*o,y=pts[i][1]+ny*o,xi=Math.round(x),yi=Math.round(y);let v=0;
-      if(xi>0&&yi>0&&xi<W-1&&yi<H-1){const k=yi*W+xi;if(teedE&&$('teedOn').checked)v=teedE[k]*1.5;else{const al=Math.abs(gdx[k]*nx+gdy[k]*ny);v=Math.min(160,magN[k])*(al>0.55?al:al*0.3);}}
+      if(xi>0&&yi>0&&xi<W-1&&yi<H-1){const k=yi*W+xi;if(F)v=F[k]*1.5;else if(teedE&&$('teedOn').checked)v=teedE[k]*1.5;else{const al=Math.abs(gdx[k]*nx+gdy[k]*ny);v=Math.min(160,magN[k])*(al>0.55?al:al*0.3);}}
       cost[i*m+o+D]=-v+1.2*Math.abs(o);}
   }
   const TP=7,back=new Int8Array(n*m);let acc=new Float32Array(m),nxt=new Float32Array(m);
@@ -1335,9 +1375,15 @@ function trimShadow(m){
 function artTail(list,outl,eps){
   const P=Object.assign({olW:2.4,parW:2.6,minRun:0.02,circ:0.12,ext:0.07,maxN:{min:22,mid:40,det:80}},window.ARTT||{});
   const lwv=lw(),carLen=carBoxPx?carBoxPx.x1-carBoxPx.x0:W*0.8,minRun=Math.max(8,carLen*P.minRun);
-  const fixed=userItems().concat(wheelItems());
+  const wins=$('cleanWin').checked?windowItems():[];
+  const fixed=userItems().concat(wheelItems(),wins);
+  // 0) Innenraum hinter den Scheiben (Sitze, Lenkrad, Spiegelungen) weglassen
+  const gm0=$('cleanWin').checked?glassMask():null;
+  if(gm0){const gm=erodeMask(gm0,Math.max(3,lwv*1.6));
+    list=list.filter(c=>{if(c.user)return true;let k=0;for(const q of c.sm)if(mAt(gm,q))k++;return k/c.sm.length<0.5;});
+    list=list.flatMap(c=>c.user?[c]:cutCovered(c,gm,minRun));}
   // 1) was am Umriss / an den Rädern entlangläuft, ist doppelt
-  const om=strokeMask(outl.concat(fixed.filter(c=>c.wheel!==undefined)),lwv*P.olW);
+  const om=strokeMask(outl.concat(fixed.filter(c=>c.wheel!==undefined||c.window)),lwv*P.olW);
   let cand=[];for(const c of list){if(c.user){cand.push(c);continue;}cand.push(...cutCovered(c,om,minRun));}
   // 2) parallele Doppellinien: stärkere Linie gewinnt, von der schwächeren bleibt nur, was frei liegt
   // kleine geschlossene Formen (Griffe, Tankdeckel, Blinker) zuerst – sie sind fast immer echte Details
@@ -1352,7 +1398,11 @@ function artTail(list,outl,eps){
     const pieces=cutCovered(c,occ,minRun);
     for(const q of pieces){kept.push(q);mark(q.sm);nAuto++;}
   }
-  // 3) kleine runde Formen → exakte Kreise (Tankdeckel, Embleme)
+  // 3) kleine runde Formen → exakte Kreise (Tankdeckel, Embleme); fast geschlossene Bögen werden zum Kreis ergänzt
+  for(const c of kept){if(c.closed||c.user||c.sm.length<20)continue;const f=fitCircle(c.sm);
+    if(!f||f.r>carLen*0.05||f.r<carLen*0.008||f.err>Math.max(2,f.r*0.15))continue;
+    const ang=c.sm.map(q=>Math.atan2(q[1]-f.y,q[0]-f.x)).sort((a,b)=>a-b);let gap=ang[0]+2*Math.PI-ang[ang.length-1];for(let i=1;i<ang.length;i++)gap=Math.max(gap,ang[i]-ang[i-1]);
+    if(gap<Math.PI*0.75){c.closed=true;}}
   for(const c of kept){if(!c.closed||c.user)continue;const f=fitCircle(c.sm);if(f&&f.r<carLen*0.08&&f.err<Math.max(2,f.r*P.circ)){
       const cub=arcCubics(f.x,f.y,f.r,0,2*Math.PI);c.cub=cub;c.sm=flatten(cub,12);c.p=c.sm;c.circle=true;}}
   let out=fixed.concat(outl,kept);
@@ -1389,7 +1439,7 @@ function run(){
   if(poly.length>=3){const pc=document.createElement('canvas');pc.width=W;pc.height=H;const px=pc.getContext('2d');
     px.beginPath();poly.forEach((p,i)=>i?px.lineTo(p.x*W,p.y*H):px.moveTo(p.x*W,p.y*H));px.closePath();px.fill();polyRegion=maskFrom(pc,127);}
   // Räder (vor dem Schatten-Trimmen)
-  if(!wheelsManual){const wk=gradKey+'|'+hi+'|'+lo+'|'+JSON.stringify(poly)+'|'+maskKey+'|'+(teedE?teedRectKey:'');
+  if(!wheelsManual){const wk=gradKey+'|'+hi+'|'+lo+'|'+JSON.stringify(poly)+'|'+maskKey+'|'+(teedE?teedRectKey:'')+'|'+artKey+'|'+(carParts?carParts.length:0);
     if(wk!==wheelKey){wheelKey=wk;let ew=hysteresis(hi*0.8,lo);
       if(mask0){const f=new Float32Array(N);for(let i=0;i<N;i++)f[i]=mask0[i];const b=boxBlur(f,Math.round(6*SC));for(let i=0;i<N;i++)if(b[i]<=0)ew[i]=0;}
       else if(polyRegion)for(let i=0;i<N;i++)ew[i]&=polyRegion[i];
@@ -1428,6 +1478,8 @@ function run(){
     if(region)for(let i=0;i<N;i++)e[i]&=region[i];
     prep(e);for(let i=0;i<N;i++)if(ad[i])e[i]=1;
     thin(e);
+    // kleine geschlossene Flächen im Linienbild = Griffe, Tankdeckel, Blinker, Embleme
+    let faces=[];if($('detailLoops').checked){const S2=e.slice();faces=faceLoops(S2,lineE,P.hi*0.9,carLen);}
     let cs=chains(e);
     for(const c of cs){let s2=0,u=0;for(const i of c.ix){s2+=lineE[i];u+=ad[i];}c.len=c.ix.length;c.str=Math.min(2,s2/c.len/P.hi);c.user=u/c.len>0.5;}
     for(const c of cs){if(c.closed||c.p.length<14)continue;const a2=c.p[0],b2=c.p[c.p.length-1];if(Math.abs(a2[0]-b2[0])<=2&&Math.abs(a2[1]-b2[1])<=2){c.closed=true;c.p=c.p.slice(0,-1);}}
@@ -1443,6 +1495,7 @@ function run(){
       if(sm.length<2)continue;
       list.push({sm,p:rdp(sm,0.6),closed:c.closed&&sm.length>3,len:c.len,str:c.str,score:c.len*c.str,user:c.user,wg:0,dens:0,detailLoop:c.closed});
     }
+    for(const f of faces){const sm=tubeFair(f.pts,true,Math.max(1,0.5*lw()),Math.max(2,it*0.4*SC));list.push({sm,p:rdp(sm,0.6),closed:true,len:f.len,str:f.str,score:1e6+f.len,user:false,wg:0,dens:0,detailLoop:true,face:true});}
     outl=useOutline?outlineItems(mask,er):[];
     dbgSnap('art',list);
   }else{
@@ -1657,7 +1710,7 @@ function undo(){
 }
 function pos(ev){const r=over.getBoundingClientRect();let x=(ev.clientX-r.left)/r.width*W;const y=(ev.clientY-r.top)/r.height*H;
   if(mode==='result'&&$('mirror').checked)x=W-x;return {x,y};}
-let queued=false;function schedule(){if(queued)return;queued=true;$('busy').hidden=false;requestAnimationFrame(()=>setTimeout(()=>{queued=false;run();$('busy').hidden=true;},0));}
+let queued=false;function schedule(){if(queued)return;queued=true;$('busy').hidden=false;requestAnimationFrame(()=>setTimeout(()=>{queued=false;$('busy').hidden=true;if(pipeBusy)return;run();},0));}
 function stroke(ctxC,a,b,w,erase){
   const c=ctxC.getContext('2d');c.save();c.lineCap='round';c.lineJoin='round';c.lineWidth=w;
   c.globalCompositeOperation=erase?'destination-out':'source-over';c.strokeStyle='#000';
@@ -1857,7 +1910,8 @@ const PRESETS={
   det:{dock:22,maxLines:100,hi:29,calm:40,weak:70,dup:11,gap:26,spur:14,curve:18,straight:3.2,lo:32,calmD:0.7}};
 document.querySelectorAll('[data-preset]').forEach(b=>b.onclick=()=>{const P=PRESETS[b.dataset.preset];
   for(const k in P){$(k).value=P[k];$(k+'O').textContent=fmt[k](P[k]);}
-  document.querySelectorAll('[data-preset]').forEach(x=>x.setAttribute('aria-pressed',x.dataset.preset===b.dataset.preset));schedule();});
+  document.querySelectorAll('[data-preset]').forEach(x=>x.setAttribute('aria-pressed',x.dataset.preset===b.dataset.preset));
+  const lv=b.dataset.preset;if(lv!==artLevel&&img){artLevel=lv;if(lineE&&$('artOn').checked){refreshAll();return;}}artLevel=lv;schedule();});
 document.querySelectorAll('[data-dev]').forEach(b=>b.onclick=()=>{device=b.dataset.dev;
   document.querySelectorAll('[data-dev]').forEach(x=>x.setAttribute('aria-pressed',x===b));
   try{localStorage.setItem('sw-device',device);}catch(e){}
