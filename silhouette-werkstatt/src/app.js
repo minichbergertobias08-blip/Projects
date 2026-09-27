@@ -276,6 +276,53 @@ function extendEnds(list,occAll,maxD,lwv){
   return add;
 }
 function strokeMaskOne(c,w){return strokeMask([c],w);}
+function freeEnds(list,pts){ // Anzahl frei endender Linien (zur Kontrolle)
+  const lwv=lw(),occ=[];let n=0;const P=list.map(c=>{const q=c.cub&&c.cub.length?flatten(c.cub,10):c.p;return q&&q.length>1?resample(q,!!c.closed,2):q;});
+  list.forEach((c,ci)=>{if(c.closed||c.wheel!==undefined||c.ground)return;const p=P[ci];if(!p||p.length<2)return;
+    for(const E of [p[0],p[p.length-1]]){let t=false;for(let j=0;j<list.length&&!t;j++){if(j===ci)continue;for(const q of P[j]||[])if(Math.hypot(q[0]-E[0],q[1]-E[1])<lwv*1.2){t=true;break;}}if(!t){n++;if(pts)pts.push([E[0],E[1],c.outline?'o':c.dockExt?'x':c.bridge?'b':'l']);}}});
+  return n;}
+function tieEnds(out,carLen,lwv,eps){
+  const ptsOf=c=>c.sm||(c.cub&&c.cub.length?flatten(c.cub,10):c.p);
+  for(const c of out)if(!c.sm)c.sm=ptsOf(c);
+  const tieable=c=>!c.closed&&c.wheel===undefined&&!c.ground&&!c.user&&!c.dockExt&&c.sm&&c.sm.length>=4;
+  let ties=[];
+  for(let iter=0;iter<6;iter++){
+    const cell=Math.max(8,lwv*3),grid=new Map(),K=(x,y)=>x+','+y;
+    out.forEach((c,ci)=>{for(const q of resample(c.sm,!!c.closed,Math.max(1.5,lwv*0.5))){const k=K(Math.floor(q[0]/cell),Math.floor(q[1]/cell));let a=grid.get(k);if(!a)grid.set(k,a=[]);a.push(ci,q[0],q[1]);}});
+    const nearest=(ci,E,R,dir)=>{let best=null,bd=Infinity;const r=Math.ceil(R/cell),gx=Math.floor(E[0]/cell),gy=Math.floor(E[1]/cell);
+      for(let a=-r;a<=r;a++)for(let b=-r;b<=r;b++){const arr=grid.get(K(gx+a,gy+b));if(!arr)continue;
+        for(let j=0;j<arr.length;j+=3){const oj=arr[j];if(oj===ci)continue;const dx=arr[j+1]-E[0],dy=arr[j+2]-E[1],d=Math.hypot(dx,dy);if(d>R)continue;
+          let cost=d;if(dir){const t=(dx*dir[0]+dy*dir[1])/(d||1);if(t<0.55)continue;cost=d*(1.6-0.6*t);}
+          if(cost<bd){bd=cost;best={ci:oj,q:[arr[j+1],arr[j+2]],d};}}}
+      return best;};
+    ties=[];const drop=new Set();
+    out.forEach((c,ci)=>{
+      if(!(tieable(c)||(c.outline&&!c.closed)))return;
+      const P=c.sm,n=P.length;
+      for(const atStart of [true,false]){
+        const E=atStart?P[0]:P[n-1];if(nearest(ci,E,lwv*0.9,null))continue;
+        const k=Math.min(n-1,Math.max(2,Math.round(lwv*2))),A=atStart?P[k]:P[n-1-k];
+        let dx=E[0]-A[0],dy=E[1]-A[1];const L=Math.hypot(dx,dy)||1;dx/=L;dy/=L;
+        let hit=null;
+        for(let st=lwv;st<=carLen*0.12;st+=Math.max(1,lwv*0.4)){const q=[E[0]+dx*st,E[1]+dy*st];if(q[0]<1||q[1]<1||q[0]>=W-1||q[1]>=H-1)break;
+          const nb=nearest(ci,q,lwv*0.6,null);if(nb){hit=nb;break;}}
+        const short=c.len<carLen*0.12&&!c.outline;
+        if(!hit)hit=nearest(ci,E,carLen*(short?0.025:0.05),[dx,dy]);
+        if(!hit&&c.outline)hit=nearest(ci,E,carLen*0.1,null);
+        if(hit)ties.push({c,ci,E,dir:[dx,dy],hit});
+        else if(!c.outline)drop.add(ci);
+      }
+    });
+    if(!drop.size)break;
+    out=out.filter((c,i)=>!drop.has(i)); // Linien ohne Anschluss weg, dann nochmal prüfen
+  }
+  for(const t of ties){const {E,dir:[dx,dy]}=t,Q=t.hit.q;let vx=Q[0]-E[0],vy=Q[1]-E[1];const d=Math.hypot(vx,vy)||1;
+    const hit=[Q[0]+vx/d*lwv*0.5,Q[1]+vy/d*lwv*0.5],h=d/3; // leicht in die Ziel-Linie hinein
+    const cub=[[E,[E[0]+dx*h,E[1]+dy*h],[hit[0]+(E[0]+dx*h-hit[0])*0.35,hit[1]+(E[1]+dy*h-hit[1])*0.35],hit]];
+    out.push({cub,sm:flatten(cub,Math.max(4,Math.round(d/3))),p:[E,hit],closed:false,user:false,dockExt:true,parent:t.c,score:t.c.score||0,len:d});}
+  return out;
+}
+
 function hystOn(F,hi,lo){
   const N=W*H,e=new Uint8Array(N),st=new Int32Array(N);let sp=0;
   for(let i=0;i<N;i++){if(e[i]||F[i]<hi)continue;e[i]=1;st[sp++]=i;
@@ -284,7 +331,7 @@ function hystOn(F,hi,lo){
 }
 
 /* ================= KI-Freistellung: U²-Net-P (Apache-2.0, Qin et al. 2020) über onnxruntime-web ================= */
-/*@ASSET U2NETP u2netp.onnx b64*/
+/*@ASSET U2NETP u2netp.onnx gzb64*/
 const ORT_BASE='https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
 /* onnxruntime-web 1.20.1 (MIT, Microsoft) – eingebettet, damit alles offline läuft */
 /*@ASSET ORT_JS ort.wasm.min.js text*/
@@ -313,7 +360,7 @@ async function ensureOrt(){
     if(!window.ort)await loadScript(ORT_BASE+'ort.wasm.min.js');
     if(!embedded)ort.env.wasm.wasmPaths=ORT_BASE;
     ort.env.wasm.numThreads=1;
-    const bin=Uint8Array.from(atob(U2NETP),c=>c.charCodeAt(0));
+    const bin=await modelBytes(U2NETP);
     ortSess=await ort.InferenceSession.create(bin,{executionProviders:['wasm'],graphOptimizationLevel:'all'});
     ortState='ready';if(pipeBusy)setProgress(1,'KI stellt das Auto frei …');
   }catch(e){ortState='failed';aiStatus();throw e;}
@@ -346,10 +393,10 @@ function bigBox(p,N){
   return best;
 }
 /* ================= Auto-Erkennung: NanoDet-Plus (Apache-2.0, RangiLyu) – findet das Auto im Bild ================= */
-/*@ASSET NANODET nanodet.onnx b64*/
+/*@ASSET NANODET nanodet.onnx gzb64*/
 let ndSess=null;
 async function detectCars(im){
-  if(!ndSess)ndSess=await ort.InferenceSession.create(Uint8Array.from(atob(NANODET),c=>c.charCodeAt(0)),{executionProviders:['wasm'],graphOptimizationLevel:'all'});
+  if(!ndSess)ndSess=await ort.InferenceSession.create(await modelBytes(NANODET),{executionProviders:['wasm'],graphOptimizationLevel:'all'});
   const nw=im.naturalWidth,nh=im.naturalHeight,S=320,sc=S/Math.max(nw,nh),w=Math.round(nw*sc),h=Math.round(nh*sc);
   const c=document.createElement('canvas');c.width=S;c.height=S;const x=c.getContext('2d',{willReadFrequently:true});
   x.fillStyle='#000';x.fillRect(0,0,S,S);x.fillStyle='#fff';x.fillRect(0,0,w,h);x.imageSmoothingQuality='high';x.drawImage(im,0,0,w,h);
@@ -369,11 +416,11 @@ async function detectCars(im){
   return keep.map(b=>({x0:Math.max(0,b.x0),y0:Math.max(0,b.y0),x1:Math.min(nw,b.x1),y1:Math.min(nh,b.y1),s:b.s}));
 }
 /* ================= Autoteile-Erkennung (YOLOv8n-seg, Car-Damage-Parts von M. Nisar) – findet v. a. die Räder zuverlässig ================= */
-/*@ASSET CARPARTS carparts.onnx b64*/
+/*@ASSET CARPARTS carparts.onnx gzb64*/
 const PART_NAMES=['Back-bumper','Back-door','Back-wheel','Back-window','Back-windshield','Broken part','Corrosion','Cracked','Dent','Fender','Flaking','Front-bumper','Front-door','Front-wheel','Front-window','Grille','Headlight','Hood','License-plate','Mirror','Missing part','Paint chip','Quarter-panel','Rocker-panel','Roof','Scratch','Tail-light','Trunk','Windshield'];
 let partsSess=null,carParts=[];
 async function detectParts(im){
-  if(!partsSess)partsSess=await ort.InferenceSession.create(b64u8(CARPARTS),{executionProviders:['wasm'],graphOptimizationLevel:'all'});
+  if(!partsSess)partsSess=await ort.InferenceSession.create(await modelBytes(CARPARTS),{executionProviders:['wasm'],graphOptimizationLevel:'all'});
   const nw=im.naturalWidth,nh=im.naturalHeight,S=640,sc=S/Math.max(nw,nh),w=Math.round(nw*sc),h=Math.round(nh*sc);
   const c=document.createElement('canvas');c.width=S;c.height=S;const x=c.getContext('2d',{willReadFrequently:true});
   x.fillStyle='rgb(114,114,114)';x.fillRect(0,0,S,S);x.imageSmoothingQuality='high';x.drawImage(im,0,0,w,h);
@@ -497,7 +544,7 @@ async function segmentImage(im){
   finally{if(segFor===im){segBusy=false;aiStatus();wheelKey='';}}
 }
 /* ================= KI-Linien: TEED (MIT, Soria et al. 2023) ================= */
-/*@ASSET TEEDM teed.onnx b64*/
+/*@ASSET TEEDM teed.onnx gzb64*/
 function polyMask(){const pc=document.createElement('canvas');pc.width=W;pc.height=H;const px=pc.getContext('2d');
   px.beginPath();poly.forEach((p,i)=>i?px.lineTo(p.x*W,p.y*H):px.moveTo(p.x*W,p.y*H));px.closePath();px.fill();return maskFrom(pc,127);}
 /* Maske fürs Auto: KI-Maske, bei eigenem Bereich mit diesem geschnitten */
@@ -526,7 +573,7 @@ function teedRect(){
 }
 async function runTeed(g){
   await ensureOrt();
-  if(!teedSess){teedState='loading';teedSess=await ort.InferenceSession.create(Uint8Array.from(atob(TEEDM),c=>c.charCodeAt(0)),{executionProviders:['wasm'],graphOptimizationLevel:'all'});}
+  if(!teedSess){teedState='loading';teedSess=await ort.InferenceSession.create(await modelBytes(TEEDM),{executionProviders:['wasm'],graphOptimizationLevel:'all'});}
   const r=teedRect(),key=W+'x'+H+':'+[r.x0,r.y0,r.w,r.h].join(',')+':'+[crop.x0,crop.y0,crop.x1,crop.y1].join(',')+':'+$('darkBoost').checked;
   if(teedE&&teedRectKey===key){teedState='ready';return;}
   const cw=r.w,ch=r.h,n=cw*ch,f=new Float32Array(3*n);
@@ -546,14 +593,15 @@ async function runTeed(g){
 }
 /* ================= KI-Zeichner: Informative Drawings (MIT, Chan/Durand/Isola 2022, Stil „anime“) =================
    Zeichnet das Foto wie ein Illustrator: Fugen, Scheiben, Lichter, Griffe – Spiegelungen werden weitgehend ignoriert. */
-/*@ASSET LINEART lineart_anime.onnx b64*/
+/*@ASSET LINEART lineart_anime.onnx gzb64*/
 let artSess=null,lineE=null,artKey='',artState='idle',artScale=1,artMs=0;
 const ART_CAR={min:600,mid:780,det:1050}; // Autobreite (px), mit der die KI zeichnet – kleiner = nur die wichtigsten Linien
 let artLevel='mid';
 const b64u8=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+async function modelBytes(s){return new Uint8Array(await new Response(new Blob([b64u8(s)]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());}
 async function runArt(g){
   await ensureOrt();
-  if(!artSess){artState='loading';artSess=await ort.InferenceSession.create(b64u8(LINEART),{executionProviders:['wasm'],graphOptimizationLevel:'all'});}
+  if(!artSess){artState='loading';artSess=await ort.InferenceSession.create(await modelBytes(LINEART),{executionProviders:['wasm'],graphOptimizationLevel:'all'});}
   const r=teedRect(),m=currentMask(),bx=m?maskBox(m):null,carW=bx?bx.x1-bx.x0:r.w*0.85;
   const s=Math.min(1.6,(window.ART_CARW||ART_CAR[artLevel])/Math.max(50,carW));
   const key=[W,H,r.x0,r.y0,r.w,r.h,s.toFixed(4),crop.x0,crop.y0,crop.x1,crop.y1].join(',');
@@ -1412,13 +1460,10 @@ function artTail(list,outl,eps){
   if(window.__DBG)console.log('afterWin',out.length);
   for(const c of out)if(!c.cub&&c.sm)c.cub=fitPath(c.sm,c.closed,eps);
   out=out.concat(groundItem(out));
-  // 5) freie Enden verlängern bis zur nächsten Linie
-  if($('connectAll').checked&&P.ext>0){
-    const occAll=strokeMask(out,Math.max(2,lwv*0.9));
-    const ext=extendEnds(out.filter(c=>!c.outline&&c.wheel===undefined&&!c.ground),occAll,carLen*P.ext,lwv);
-    for(const e of ext)e.cub=fitPath(e.sm,false,eps);
-    out=out.concat(ext);
-  }
+  // 5) Keine freien Linienenden: jedes Ende wird verlängert oder angebunden – sonst fliegt die Linie raus
+  if(window.__DBG)console.log('pre-tie free',freeEnds(out));
+  if($('connectAll').checked)out=tieEnds(out,carLen,lwv,eps);
+  if(window.__DBG)console.log('post-tie free',freeEnds(out));
   for(const c of out)delete c.sm;
   return out;
 }
@@ -1552,9 +1597,10 @@ function run(){
   if(useArt){
     list=artTail(list,outl,eps);
     r=rasterize(list);L=label(r);
-    if(window.__DBG)console.log('pre-connect',list.length,'parts',L.n);
+    if(window.__DBG)console.log('pre-connect',list.length,'parts',L.n,'free',freeEnds(list));
     if($('connectAll').checked&&L.n>1){const o=connectParts(list);list=o.list;r=o.r;L=o.L;}
-    if(window.__DBG)console.log('post-connect',list.length);
+    if($('connectAll').checked&&freeEnds(list)>0){list=tieEnds(list,carBoxPx?carBoxPx.x1-carBoxPx.x0:W*0.8,lw(),eps);for(const c of list)delete c.sm;r=rasterize(list);L=label(r);if(L.n>1){const o=connectParts(list);list=o.list;r=o.r;L=o.L;}}
+    if(window.__DBG)console.log('post-connect',list.length,'free',freeEnds(list));
     const at=pt=>L.lab[Math.min(H-1,Math.max(0,Math.round(pt[1])))*W+Math.min(W-1,Math.max(0,Math.round(pt[0])))];
     labOf=c=>{const P=c.cub&&c.cub.length?flatten(c.cub,4):c.p;const cnt=new Map();let b=0,bv=0;for(const q of P){const l=at(q);if(!l)continue;const v=(cnt.get(l)||0)+1;cnt.set(l,v);if(v>bv){bv=v;b=l;}}return b;};
   }else{

@@ -7,7 +7,10 @@ A = lambda f: os.path.join(ROOT, 'assets', f)
 def asset(m):
     name, fn, kind = m.group(1), m.group(2), m.group(3)
     data = open(A(fn), 'rb').read()
-    if kind == 'b64':
+    if kind == 'gzb64':
+        import gzip
+        val = base64.b64encode(gzip.compress(data, 9, mtime=0)).decode()
+    elif kind == 'b64':
         val = base64.b64encode(data).decode()
     elif kind == 'text':
         val = data.decode('utf-8')
