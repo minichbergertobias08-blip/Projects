@@ -65,9 +65,10 @@ async function startPipeline(im,g,demo){
   await runTeedStage(g);tmark('lines');
   if(g!==gen)return;
   setProgress(3,'Zeichnung wird erstellt …');await nextFrame();
-  currentMask();await nextFrame(); // in Etappen rechnen, damit die Seite nicht hängt
+  currentMask();tmark('mask');await nextFrame(); // in Etappen rechnen, damit die Seite nicht hängt
   run();tmark('run');fitView();
   pipeBusy=false;setProgress(0);render();
+  if(g===gen&&claudeClient()){claudeIdentify(g).then(()=>claudeReview(g,false));}
   setTip(finishTip());
 }
 function finishTip(){
@@ -228,10 +229,11 @@ function lineNormals(E){
 function bilin(F,x,y){const x0=Math.floor(x),y0=Math.floor(y),fx=x-x0,fy=y-y0,i=y0*W+x0;return (F[i]*(1-fx)+F[i+1]*fx)*(1-fy)+(F[i+W]*(1-fx)+F[i+W+1]*fx)*fy;}
 /* ---- Hilfen für den KI-Zeichner ---- */
 function strokeMask(items,width){ // Rastermaske der Linien mit gegebener Breite
-  const c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d',{willReadFrequently:true});
+  const m=new Uint8Array(W*H),bb=itemsBox(items,width+2);if(!bb||bb.x1-bb.x0<1||bb.y1-bb.y0<1)return m;const w=bb.x1-bb.x0,h=bb.y1-bb.y0;
+  const c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d',{willReadFrequently:true});x.translate(-bb.x0,-bb.y0);
   x.lineCap='round';x.lineJoin='round';x.lineWidth=width;x.strokeStyle='#000';
   for(const it of items){const P=it.sm||(it.cub&&it.cub.length?flatten(it.cub,10):it.p);if(!P||P.length<2)continue;x.beginPath();x.moveTo(P[0][0],P[0][1]);for(let i=1;i<P.length;i++)x.lineTo(P[i][0],P[i][1]);if(it.closed)x.closePath();x.stroke();}
-  const d=x.getImageData(0,0,W,H).data,m=new Uint8Array(W*H);for(let i=0;i<m.length;i++)m[i]=d[i*4+3]>100?1:0;return m;
+  const d=x.getImageData(0,0,w,h).data;for(let y=0;y<h;y++){const o=(y+bb.y0)*W+bb.x0,r=y*w;for(let k=0;k<w;k++)m[o+k]=d[(r+k)*4+3]>100?1:0;}return m;
 }
 const mAt=(m,q)=>{const x=Math.round(q[0]),y=Math.round(q[1]);return x>=0&&y>=0&&x<W&&y<H&&m[y*W+x]===1;};
 /* Teile einer Linie, die in der Maske liegen, herausschneiden; übrig bleiben Stücke >= minRun */
@@ -309,7 +311,7 @@ function tieEnds(out,carLen,lwv,eps,o){
         const k=Math.min(n-1,Math.max(2,Math.round(lwv*2))),A=atStart?P[k]:P[n-1-k];
         let dx=E[0]-A[0],dy=E[1]-A[1];const L=Math.hypot(dx,dy)||1;dx/=L;dy/=L;
         let hit=null;
-        for(let st=lwv;st<=carLen*RAY;st+=Math.max(1,lwv*0.4)){const q=[E[0]+dx*st,E[1]+dy*st];if(q[0]<1||q[1]<1||q[0]>=W-1||q[1]>=H-1)break;
+        for(let st=lwv;st<=carLen*(c.door?Math.max(RAY,0.15):RAY);st+=Math.max(1,lwv*0.4)){const q=[E[0]+dx*st,E[1]+dy*st];if(q[0]<1||q[1]<1||q[0]>=W-1||q[1]>=H-1)break;
           const nb=nearest(ci,q,lwv*0.6,null);if(nb){hit=nb;break;}}
         const short=c.len<carLen*0.12&&!c.outline;
         if(!hit)hit=nearest(ci,E,carLen*(short?Math.min(0.025,NEAR):NEAR),[dx,dy]);
@@ -322,7 +324,7 @@ function tieEnds(out,carLen,lwv,eps,o){
     out=out.filter((c,i)=>!drop.has(i)); // Linien ohne Anschluss weg, dann nochmal prüfen
   }
   for(const t of ties){const {E,dir:[dx,dy]}=t,Q=t.hit.q;let vx=Q[0]-E[0],vy=Q[1]-E[1];const d=Math.hypot(vx,vy)||1;
-    const hit=[Q[0]+vx/d*lwv*0.5,Q[1]+vy/d*lwv*0.5],h=d/3; // leicht in die Ziel-Linie hinein
+    const hit=[Q[0],Q[1]],h=d/3; // endet genau auf der Mittellinie der Ziel-Linie
     const cub=[[E,[E[0]+dx*h,E[1]+dy*h],[hit[0]+(E[0]+dx*h-hit[0])*0.35,hit[1]+(E[1]+dy*h-hit[1])*0.35],hit]];
     out.push({cub,sm:flatten(cub,Math.max(4,Math.round(d/3))),p:[E,hit],closed:false,user:false,dockExt:true,parent:t.c,score:t.c.score||0,len:d});}
   return out;
@@ -521,6 +523,27 @@ function partShape(p,o){
   return pts;
 }
 /* Fensterkontur „wie gezeichnet“: Maske an die KI-Linien anlegen, dann zu einem Vieleck mit leicht gerundeten Ecken vereinfachen */
+/* Ersatz, wenn die Teile-Erkennung keine Scheibe findet: große geschlossene Flächen im oberen Teil der KI-Zeichnung */
+let glassFaces=[],glassFacesFn=()=>[],ridCache={};
+function windowFaces(e,mask,carLen){
+  const bb=maskBox(mask);if(!bb)return [];const N=W*H,S=new Uint8Array(N);
+  const src=new Uint8Array(N);for(let i=0;i<N;i++)src[i]=(e[i]||(lineE&&lineE[i]>22))?1:0;
+  for(let i=0;i<N;i++)if(src[i]){const x=i%W,y=(i-x)/W;for(let dy=-3;dy<=3;dy++)for(let dx=-3;dx<=3;dx++){const xx=x+dx,yy=y+dy;if(xx>=0&&yy>=0&&xx<W&&yy<H)S[yy*W+xx]=1;}}
+  const lab=new Int32Array(N),st=new Int32Array(N),out=[];let n=0;const aMin=(0.07*carLen)**2,aMax=(0.4*carLen)**2,Hc=bb.y1-bb.y0;
+  for(let i=0;i<N;i++){if(S[i]||lab[i]||!mask[i])continue;n++;let sp=0,cnt=0,x0=W,x1=0,y0=H,y1=0,sy=0,leak=false;lab[i]=n;st[sp++]=i;
+    while(sp){const j=st[--sp];cnt++;const x=j%W,y=(j-x)/W;sy+=y;if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y;
+      for(const k of [j-1,j+1,j-W,j+W]){if(k<0||k>=N||S[k]||lab[k]||!mask[k])continue;lab[k]=n;st[sp++]=k;}}
+    if(window.__DBG)console.log('face',cnt|0,Math.round(aMin),Math.round(aMax),x0,y0,x1,y1);
+    if(leak||cnt<aMin||cnt>aMax)continue;const cy=sy/cnt;if(cy>bb.y0+0.5*Hc)continue;
+    const bw=x1-x0+1,bh=y1-y0+1;if(cnt/(bw*bh)<0.33||bw/bh>6||bh>Hc*0.5)continue;
+    const sub=new Uint8Array(bw*bh);for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++)if(lab[y*W+x]===n)sub[(y-y0)*bw+x-x0]=1;
+    const loops=traceContours(sub,bw,bh);if(!loops.length)continue;let L0=loops[0],la=0;for(const l of loops){const a=Math.abs(polyArea(l));if(a>la){la=a;L0=l;}}
+    let pts=resample(L0.map(q=>[q[0]+x0,q[1]+y0]),true,1.5);if(lineE)pts=snapContour(pts,Math.max(4,0.006*carLen),lineE);pts=gsmooth(pts,Math.max(1.5,2*SC),true);
+    let poly=simplifyLoop(pts,Math.max(1.5,0.004*carLen));if(poly.length<3)continue;
+    const q3=[];for(let k=0;k<poly.length;k++){const a2=poly[k],b2=poly[(k+1)%poly.length];q3.push([a2[0]*0.9+b2[0]*0.1,a2[1]*0.9+b2[1]*0.1],[a2[0]*0.1+b2[0]*0.9,a2[1]*0.1+b2[1]*0.9]);}
+    out.push(resample(q3,true,1.5));}
+  return out;
+}
 function crispWindow(p){
   const carLen=carBoxPx?carBoxPx.x1-carBoxPx.x0:W*0.8,nw=img.naturalWidth,nh=img.naturalHeight,ax=(crop.x1-crop.x0)*nw/W,ay=(crop.y1-crop.y0)*nh/H;
   const pad=Math.round(0.02*carLen);
@@ -540,18 +563,22 @@ function crispWindow(p){
   let best=loops[0],ba=0;for(const l of loops){const aa=Math.abs(polyArea(l));if(aa>ba){ba=aa;best=l;}}
   let pts=resample(best.map(q2=>[q2[0]+X0,q2[1]+Y0]),true,1.5);
   pts=gsmooth(pts,Math.max(1.2,1.5*SC),true);
-  let poly=simplifyLoop(pts,Math.max(1.5,0.004*carLen)); // gerade Kanten, echte Ecken
+  let poly=simplifyLoop(pts,Math.max(1.5,0.006*carLen)); // gerade Kanten, echte Ecken
   if(poly.length<3)return null;
   // nur minimal runden
   const q3=[];for(let i=0;i<poly.length;i++){const a2=poly[i],b2=poly[(i+1)%poly.length];q3.push([a2[0]*0.9+b2[0]*0.1,a2[1]*0.9+b2[1]*0.1],[a2[0]*0.1+b2[0]*0.9,a2[1]*0.1+b2[1]*0.9]);}
   return resample(q3,true,1.5);
 }
+let winCache={k:null,v:null};
 function windowItems(){
-  if(!carParts||!img||!lineE)return [];const out=[];
+  if(!carParts||!img||!lineE)return [];
+  const ck=[carParts.length,crop.x0,crop.y0,crop.x1,crop.y1,W,H,img.src.length].join('|');if(winCache.k===ck&&winCache.parts===carParts&&winCache.lineE===lineE)return winCache.v.map(c=>Object.assign({},c));
+  const out=[];
   for(const p of carParts){if(!p.mask||p.s<0.25||!GLASS.test(p.k))continue;const pts=crispWindow(p);if(!pts)continue;
     {let per=0;for(let i=0;i<pts.length;i++){const a=pts[i],b=pts[(i+1)%pts.length];per+=Math.hypot(a[0]-b[0],a[1]-b[1]);}
      const th=2*Math.abs(polyArea(pts))/Math.max(1,per),carLen=carBoxPx?carBoxPx.x1-carBoxPx.x0:W*0.8;if(th<carLen*0.012)continue;} // schmaler Streifen (Frontscheibe von der Seite) → weglassen
     out.push({sm:pts,p:rdp(pts,0.6),closed:true,len:pts.length,str:2,score:1e7,user:false,protect:true,window:!/shield/i.test(p.k),shield:/shield/i.test(p.k)});}
+  winCache={k:ck,parts:carParts,lineE,v:out.map(c=>Object.assign({},c))};
   return out;
 }
 function wheelsFromParts(){
@@ -756,7 +783,20 @@ function buildMask(){
   carMask=m;return m;
 }
 function maskBox(m){let x0=W,x1=-1,y0=H,y1=-1;for(let y=0;y<H;y++){const o=y*W;for(let x=0;x<W;x++)if(m[o+x]){if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y;}}return x1<0?null:{x0,x1,y0,y1};}
-function erodeMask(m,r){if(r<1)return m;const f=new Float32Array(W*H);for(let i=0;i<f.length;i++)f[i]=m[i];const b=boxBlur(f,Math.round(r)),o=new Uint8Array(W*H);for(let i=0;i<o.length;i++)o[i]=b[i]>0.9999?1:0;return o;}
+function boxCountOp(m,r,ero){ // Erosion/Dilatation mit quadratischem Fenster über ein Summenbild (nur im Maskenbereich → schnell)
+  r=Math.round(r);const o=new Uint8Array(W*H),bb=maskBox(m);if(!bb)return o;
+  const X0=Math.max(0,bb.x0-(ero?0:r)),Y0=Math.max(0,bb.y0-(ero?0:r)),X1=Math.min(W-1,bb.x1+(ero?0:r)),Y1=Math.min(H-1,bb.y1+(ero?0:r)),w=X1-X0+1,h=Y1-Y0+1,w1=w+1;
+  const I=new Int32Array(w1*(h+1));
+  for(let y=0;y<h;y++){let s=0;const row=(y+Y0)*W+X0,o1=(y+1)*w1,o0=y*w1;for(let x=0;x<w;x++){s+=m[row+x]?1:0;I[o1+x+1]=I[o0+x+1]+s;}}
+  for(let y=0;y<h;y++){const gy=y+Y0,ya=Math.max(0,gy-r),yb=Math.min(H-1,gy+r);
+    if(ero&&(ya<Y0||yb>Y1))continue;const ra=Math.max(ya,Y0)-Y0,rb=Math.min(yb,Y1)-Y0+1;
+    for(let x=0;x<w;x++){const gx=x+X0,xa=Math.max(0,gx-r),xb=Math.min(W-1,gx+r);
+      if(ero){if(xa<X0||xb>X1)continue;if(!m[gy*W+gx])continue;}
+      const ca=Math.max(xa,X0)-X0,cb=Math.min(xb,X1)-X0+1;
+      const cnt=I[rb*w1+cb]-I[ra*w1+cb]-I[rb*w1+ca]+I[ra*w1+ca];
+      if(ero?cnt===(yb-ya+1)*(xb-xa+1):cnt>0)o[gy*W+gx]=1;}}
+  return o;}
+function erodeMask(m,r){if(r<1)return m;return boxCountOp(m,r,true);}
 /* Kontur an echte Bildkanten ziehen (Normalensuche + robuste Glättung der Verschiebung) */
 function snapContour(pts,delta,F,closedIn){
   const n=pts.length;if(n<12||(!magN&&!F))return pts;
@@ -801,10 +841,9 @@ function removeTongues(pts){
 }
 /* Außenkontur aus der Maske, ohne die Reifen */
 function openMask(m,r){ // Öffnen: dünne Auswüchse (Antenne, Dachträger-Spitzen) verschwinden, Form bleibt
-  if(r<1)return m;const e=erodeMask(m,r),f=new Float32Array(W*H);for(let i=0;i<f.length;i++)f[i]=e[i];
-  const b=boxBlur(f,Math.round(r)),o=new Uint8Array(W*H);for(let i=0;i<o.length;i++)o[i]=b[i]>1e-6&&m[i]?1:0;return o;}
+  if(r<1)return m;const d=boxCountOp(erodeMask(m,r),r,false);for(let i=0;i<d.length;i++)if(!m[i])d[i]=0;return d;}
 function outlineItems(m,er){
-  {const bb0=maskBox(m);if(bb0&&artLevel==='min')m=openMask(m,Math.max(3,0.011*(bb0.x1-bb0.x0)));}
+  {const bb0=maskBox(m);if(bb0&&artLevel==='min')m=openMask(m,Math.max(2,0.005*(bb0.x1-bb0.x0)));}
   const bb=maskBox(m);if(!bb)return [];
   const x0=Math.max(0,bb.x0-2),y0=Math.max(0,bb.y0-2),w=Math.min(W,bb.x1+3)-x0,h=Math.min(H,bb.y1+3)-y0,sub=new Uint8Array(w*h);
   for(let y=0;y<h;y++)for(let x=0;x<w;x++)sub[y*w+x]=m[(y+y0)*W+x+x0];
@@ -816,6 +855,7 @@ function outlineItems(m,er){
   pts=removeTongues(pts);
   pts=gsmooth(pts,Math.max(1.5,(+$('curve').value*0.35+1.5)*SC),true);
   if(FAIR)pts=tubeFair(pts,true,Math.max(1.2,(window.OUT_T||0.9)*lw()),+$('curve').value*(window.OUT_S||1.2)*SC);
+  bodyLoop=pts;
   const bm=Math.max(3,lw()*1.5),bL=crop.x0<=0.001,bR=crop.x1>=0.999,bT=crop.y0<=0.001,bB=crop.y1>=0.999;
   const cut=q=>{const x=Math.round(q[0]),y=Math.round(q[1]);if(x>=0&&y>=0&&x<W&&y<H&&er&&er[y*W+x])return true;
     if((bL&&q[0]<bm)||(bR&&q[0]>W-1-bm)||(bT&&q[1]<bm)||(bB&&q[1]>H-1-bm))return true; // Bildrand: dort keinen Umriss zeichnen
@@ -1217,7 +1257,7 @@ function pathD(list,ox,oy,s){
 }
 /* ================= Strichstil: Hierarchie + Pinsel-Enden ================= */
 let drawing=[],strokeMode='brush';
-const TIERW={A:1,B1:0.88,B:0.74,C:0.55};
+const TIERW={A:1,B1:0.9,B:0.8,C:0.7};
 function minWidthPx(){const mm=+$('mm').value||600,minMM=Math.max(0,+$('minMM').value||0),fw=(carBoxPx?carBoxPx.x1-carBoxPx.x0:W*0.8)+2*marg();return minMM*fw/mm;}
 function endGrid(list,cell){
   const g=new Map(),K=(x,y)=>x+','+y,st=Math.max(1.5,2*SC);
@@ -1344,9 +1384,9 @@ function connectParts(list){
       for(const i of idx)for(const q of samplePts(list[i],st)){const gx=Math.floor(q[0]/cell),gy=Math.floor(q[1]/cell);
         for(let a=-1;a<=1;a++)for(let b=-1;b<=1;b++){const arr=grid.get(K(gx+a,gy+b));if(!arr)continue;
           for(let j=0;j<arr.length;j+=2){const d=Math.hypot(arr[j]-q[0],arr[j+1]-q[1]);if(d<bd){bd=d;best=[q,[arr[j],arr[j+1]]];}}}}
-      const prot=idx.some(i=>list[i].user||list[i].wheel!==undefined||list[i].outline);
+      const prot=idx.some(i=>list[i].user||list[i].wheel!==undefined||list[i].outline||list[i].window||list[i].light);
       let tl=0;for(const i of idx)tl+=list[i].len||0;const signif=prot||tl>=(carBoxPx?carBoxPx.x1-carBoxPx.x0:W)*0.18;
-      if(best&&(bd<=Math.max(3*lw(),8*SC)||(signif&&bd<=maxB))){const [p,q]=best;add.push({p:[p,q],cub:[[p,[p[0]+(q[0]-p[0])/3,p[1]+(q[1]-p[1])/3],[p[0]+2*(q[0]-p[0])/3,p[1]+2*(q[1]-p[1])/3],q]],closed:false,bridge:true,user:false,score:0});changed=true;}
+      if(best&&(bd<=Math.max(3*lw(),8*SC)||(signif&&bd<=maxB)||(prot&&bd<=maxB*4))){const [p,q]=best;add.push({p:[p,q],cub:[[p,[p[0]+(q[0]-p[0])/3,p[1]+(q[1]-p[1])/3],[p[0]+2*(q[0]-p[0])/3,p[1]+2*(q[1]-p[1])/3],q]],closed:false,bridge:true,user:false,score:0});changed=true;}
       else if(!prot){for(const i of idx)drop.add(i);changed=true;}
     }
     if(!changed)return {list,r,L};
@@ -1463,7 +1503,11 @@ function densityPenalty(list,outl,k){
   });
 }
 /* Schatten unter dem Auto aus der Maske entfernen: Schwellerlinie per RANSAC suchen */
+let tsCache={};
 function trimShadow(m){
+  {const k=[m&&m.length,JSON.stringify(wheels),$('shadowOn').checked,!!teedE&&$('teedOn').checked].join('|');if(tsCache.m===m&&tsCache.k===k&&tsCache.t===teedE)return tsCache.v;const v=trimShadow0(m);tsCache={m,k,t:teedE,v};return v;}
+}
+function trimShadow0(m){
   if(!m||wheels.length<2||!$('shadowOn').checked)return m;
   const ws=wheels.slice().sort((a,b)=>a.x-b.x),A=ws[0],Bw=ws[ws.length-1];
   const ax=A.x*W,ay=A.y*H,ar=A.r*W,bx=Bw.x*W,by=Bw.y*H,br=Bw.r*W;
@@ -1503,20 +1547,27 @@ function trimShadow(m){
 /* ================= KI-Zeichner: Linien ordnen, Doppellinien zusammenfassen, verbinden ================= */
 /* ================= Stil „Minimal“: nur die Bauteile, die ein Designer zeichnen würde =================
    Umriss, Räder, Radläufe, Fenster, Spiegel, Lichter, Türfugen – als glatte Formen, ohne Überstände. */
-function fillMask(items,grow){
-  const c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d',{willReadFrequently:true});
+function itemsBox(items,pad){let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  for(const it of items){const P=it.sm||(it.cub&&it.cub.length?flatten(it.cub,10):it.p);if(!P)continue;for(const q of P){if(q[0]<x0)x0=q[0];if(q[0]>x1)x1=q[0];if(q[1]<y0)y0=q[1];if(q[1]>y1)y1=q[1];}}
+  if(x1<x0)return null;return {x0:Math.max(0,Math.floor(x0-pad)),y0:Math.max(0,Math.floor(y0-pad)),x1:Math.min(W,Math.ceil(x1+pad)+1),y1:Math.min(H,Math.ceil(y1+pad)+1)};}
+function fillMask(items,grow){ // nur im Bereich der Formen zeichnen und auslesen (schnell)
+  const m=new Uint8Array(W*H),bb=itemsBox(items,grow+2);if(!bb||bb.x1-bb.x0<1||bb.y1-bb.y0<1)return m;const w=bb.x1-bb.x0,h=bb.y1-bb.y0;
+  const c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d',{willReadFrequently:true});x.translate(-bb.x0,-bb.y0);
   x.fillStyle='#000';x.strokeStyle='#000';x.lineJoin='round';x.lineWidth=Math.max(1,2*grow);
   for(const it of items){const P=it.sm||it.p;if(!P||P.length<3)continue;x.beginPath();x.moveTo(P[0][0],P[0][1]);for(let i=1;i<P.length;i++)x.lineTo(P[i][0],P[i][1]);x.closePath();x.fill();if(grow>0)x.stroke();}
-  const d=x.getImageData(0,0,W,H).data,m=new Uint8Array(W*H);for(let i=0;i<m.length;i++)m[i]=d[i*4+3]>100?1:0;return m;
+  const d=x.getImageData(0,0,w,h).data;for(let y=0;y<h;y++){const o=(y+bb.y0)*W+bb.x0,r=y*w;for(let k=0;k<w;k++)m[o+k]=d[(r+k)*4+3]>100?1:0;}return m;
 }
 function cleanTail(list,outl,eps,mask){
   const lwv=lw(),carLen=carBoxPx?carBoxPx.x1-carBoxPx.x0:W*0.8,carH=carBoxPx?carBoxPx.y1-carBoxPx.y0:H*0.5,minRun=Math.max(8,carLen*0.02);
   const fixed=userItems().concat(wheelItems());
-  let wins=windowItems();const side=wins.filter(w=>w.window);if(side.length)wins=side; // Front-/Heckscheibe von der Seite = schmaler Streifen → weglassen
+  const erM=maskFrom(eraseC,0),erased=c=>{const P=c.sm||c.p;if(!P||!P.length)return false;let k=0;for(const q of P)if(mAt(erM,q))k++;return k>P.length*0.5;};
+  let wins=windowItems().filter(c=>!erased(c));const side=wins.filter(w=>w.window);if(side.length)wins=side;
+  if(!wins.length&&!glassFaces)glassFaces=glassFacesFn();
+  if(!wins.length)wins=glassFaces.map(pts=>({sm:pts,p:rdp(pts,0.6),closed:true,len:pts.length,score:1e7,window:true,protect:true})).filter(c=>!erased(c)); // Front-/Heckscheibe von der Seite = schmaler Streifen → weglassen
   const mirr=[],lights=[];
   for(const p of carParts){if(!p.mask)continue;
-    if(p.k==='Mirror'&&p.s>0.35){const pts=partShape(p,{minA:0.012*carLen,S:16,T:1.1,snapF:0.004,hull:true});if(pts)mirr.push({sm:pts,closed:true,len:pts.length,score:5e6,mirror:true});}
-    else if(/light/i.test(p.k)&&p.s>0.25){const pts=partShape(p,{minA:0.012*carLen,S:22,T:1.4,snapF:0.004,hull:true});if(pts)lights.push({sm:pts,closed:true,len:pts.length,score:4e6,light:true});}}
+    if(p.k==='Mirror'&&p.s>0.35){const pts=partShape(p,{minA:0.012*carLen,S:16,T:1.1,snapF:0.004,hull:true});if(pts&&!erased({sm:pts}))mirr.push({sm:pts,closed:true,len:pts.length,score:5e6,mirror:true});}
+    else if(/light/i.test(p.k)&&p.s>0.25){const pts=partShape(p,{minA:0.012*carLen,S:22,T:1.4,snapF:0.004,hull:true});if(pts&&!erased({sm:pts}))lights.push({sm:pts,closed:true,len:pts.length,score:4e6,light:true});}}
   // Türfugen: lange, steile Linien des KI-Zeichners
   const doors=[],arches=[];
   for(const c of list){if(c.user||c.closed||!c.sm||c.sm.length<10)continue;const P=c.sm;
@@ -1568,6 +1619,260 @@ function cleanTail(list,outl,eps,mask){
 /* Keine Überstände: eine Linie darf andere berühren, aber nicht darüber hinausragen.
    Rangfolge: Umriss/Räder/Fenster > Spiegel > Lichter > Türfugen > Radläufe. Von jeder Linie bleibt nur das
    längste Stück zwischen zwei Berührungen – die Enden sitzen damit genau auf den anderen Linien. */
+/* Letzte Kontrolle: kein Linienende ragt über eine andere Linie hinaus (Überstand = kurzes Stück hinter der Berührung) */
+function strokeMaskBox(items,width,bx){
+  const w=bx.x1-bx.x0,h=bx.y1-bx.y0;if(w<2||h<2)return null;const c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d',{willReadFrequently:true});
+  x.translate(-bx.x0,-bx.y0);x.lineCap='round';x.lineJoin='round';x.lineWidth=width;x.strokeStyle='#000';
+  for(const it of items){const P=it.cub&&it.cub.length?flatten(it.cub,10):it.p;if(!P||P.length<2)continue;x.beginPath();x.moveTo(P[0][0],P[0][1]);for(let i=1;i<P.length;i++)x.lineTo(P[i][0],P[i][1]);if(it.closed)x.closePath();x.stroke();}
+  const d=x.getImageData(0,0,w,h).data,m=new Uint8Array(w*h);for(let i=0;i<m.length;i++)m[i]=d[i*4+3]>100?1:0;return {m,bx,w,h};
+}
+/* ================= Stil „Minimal“: klare Konstruktion =================
+   Karosserie-Umriss + geschlossene Reifen + ein Radlauf je Rad + Fenster + Spiegel/Lichter + Türfugen.
+   Jede Linie endet exakt auf einer anderen Linie: nichts steht über, nichts hängt frei. */
+let bodyLoop=null;
+function ptIndex(items,step){ // Raster aller Linienpunkte für schnelle Abstandsabfragen
+  const cell=16,g=new Map(),K=(x,y)=>x+','+y;
+  items.forEach((c,ci)=>{const P=c.sm||(c.cub&&c.cub.length?flatten(c.cub,16):c.p);if(!P||P.length<1)return;
+    for(const q of (P.length>1?resample(P,!!c.closed,step||1):P)){const k=K(Math.floor(q[0]/cell),Math.floor(q[1]/cell));let a=g.get(k);if(!a)g.set(k,a=[]);a.push(ci,q[0],q[1]);}});
+  return {near(q,R,skip){const r=Math.ceil(R/cell),gx=Math.floor(q[0]/cell),gy=Math.floor(q[1]/cell);let bd=R,bp=null,bi=-1;
+    for(let a=-r;a<=r;a++)for(let b=-r;b<=r;b++){const arr=g.get(K(gx+a,gy+b));if(!arr)continue;
+      for(let j=0;j<arr.length;j+=3){if(skip&&skip(arr[j]))continue;const d=Math.hypot(arr[j+1]-q[0],arr[j+2]-q[1]);if(d<bd){bd=d;bp=[arr[j+1],arr[j+2]];bi=arr[j];}}}
+    return bp?{d:bd,p:bp,i:bi}:null;}};
+}
+function runsOf(P,keep,closed){ // zusammenhängende Stücke, in denen keep[i] gilt
+  const n=P.length,runs=[];if(keep.every(k=>k))return closed?[{pts:P,closed:true}]:[{pts:P,closed:false}];
+  let s0=closed?keep.indexOf(false):-1,cur=[];
+  const tot=closed?n:n;for(let k=1;k<=tot;k++){const i=closed?(s0+k)%n:k-1;if(keep[i])cur.push(P[i]);else{if(cur.length)runs.push({pts:cur,closed:false});cur=[];}}
+  if(cur.length)runs.push({pts:cur,closed:false});return runs;
+}
+function roundPoly(poly){const q=[];for(let k=0;k<poly.length;k++){const a=poly[k],b=poly[(k+1)%poly.length];q.push([a[0]*0.88+b[0]*0.12,a[1]*0.88+b[1]*0.12],[a[0]*0.12+b[0]*0.88,a[1]*0.12+b[1]*0.88]);}return resample(q,true,1.5);}
+function clipClosedTo(pts,allow,carLen){ // geschlossene Form auf erlaubten Bereich beschneiden und neu umfahren
+  const f=fillMask([{sm:pts}],0);let a=0,b=0;const bb=maskBox(f);if(!bb)return null;
+  for(let i=0;i<f.length;i++)if(f[i]){a++;if(allow[i])b++;else f[i]=0;}
+  if(b===a)return pts;if(b<a*0.55)return null;
+  const x0=bb.x0,y0=bb.y0,w=bb.x1-bb.x0+1,h=bb.y1-bb.y0+1,sub=new Uint8Array(w*h);for(let y=0;y<h;y++)for(let x=0;x<w;x++)sub[y*w+x]=f[(y+y0)*W+x+x0];
+  const loops=traceContours(sub,w,h);if(!loops.length)return null;let best=loops[0],ba=0;for(const l of loops){const aa=Math.abs(polyArea(l));if(aa>ba){ba=aa;best=l;}}
+  let P=resample(best.map(q=>[q[0]+x0,q[1]+y0]),true,1.5);P=gsmooth(P,Math.max(1.2,1.5*SC),true);
+  const poly=simplifyLoop(P,Math.max(1.5,0.006*carLen));if(poly.length<3)return null;return roundPoly(poly);
+}
+function partSub(p){ // Teile-Maske im Arbeitsraster
+  const nw=img.naturalWidth,nh=img.naturalHeight,ax=(crop.x1-crop.x0)*nw/W,ay=(crop.y1-crop.y0)*nh/H;
+  const X0=Math.max(0,Math.floor((p.x0-crop.x0*nw)/ax)-4),X1=Math.min(W-1,Math.ceil((p.x1-crop.x0*nw)/ax)+4),Y0=Math.max(0,Math.floor((p.y0-crop.y0*nh)/ay)-4),Y1=Math.min(H-1,Math.ceil((p.y1-crop.y0*nh)/ay)+4);
+  const w=X1-X0+1,h=Y1-Y0+1;if(w<10||h<10)return null;const sub=new Uint8Array(w*h),k=p.msc,MW=p.mw,M=p.mask;
+  for(let y=0;y<h;y++){const my=(crop.y0*nh+(y+Y0)*ay)*k-0.5;for(let x=0;x<w;x++){const mx=(crop.x0*nw+(x+X0)*ax)*k-0.5;
+    const ix=Math.max(0,Math.min(MW-2,Math.floor(mx))),iy=Math.max(0,Math.min(MW-2,Math.floor(my))),fx=Math.min(1,Math.max(0,mx-ix)),fy=Math.min(1,Math.max(0,my-iy));
+    const v=(M[iy*MW+ix]*(1-fx)+M[iy*MW+ix+1]*fx)*(1-fy)+(M[(iy+1)*MW+ix]*(1-fx)+M[(iy+1)*MW+ix+1]*fx)*fy;
+    const gx=crop.x0*nw+(x+X0)*ax,gy=crop.y0*nh+(y+Y0)*ay;if(v>0&&gx>=p.x0&&gx<=p.x1&&gy>=p.y0&&gy<=p.y1)sub[y*w+x]=1;}}
+  return {sub,w,h,X0,Y0};
+}
+function doorEdges(carLen){ // senkrechte Kanten der erkannten Türen = Türfugen
+  const out=[];if(!carParts||!img)return out;
+  for(const p of carParts){if(!/door/i.test(p.k)||!p.mask||p.s<0.4)continue;const S=partSub(p);if(!S)continue;const {sub,w,h,X0,Y0}=S;
+    let y0=-1,y1=-1;const L=[],R=[];let ya=h,yb=-1;for(let y=0;y<h;y++)for(let x=0;x<w;x++)if(sub[y*w+x]){ya=Math.min(ya,y);yb=Math.max(yb,y);break;}
+    const cy0=ya+(yb-ya)*0.04,cy1=yb-(yb-ya)*0.1;
+    for(let y=0;y<h;y++){if(y<cy0||y>cy1)continue;let a=-1,b=-1;for(let x=0;x<w;x++)if(sub[y*w+x]){if(a<0)a=x;b=x;}if(a<0)continue;if(y0<0)y0=y;y1=y;L.push([a+X0,y+Y0]);R.push([b+X0+1,y+Y0]);}
+    if(y1-y0<carLen*0.08)continue;
+    for(const E of [L,R]){let P=gsmooth(E,Math.max(3,0.01*carLen),false);P=resample(P,false,1.5);
+      out.push({sm:P,closed:false,len:P.length,fromPart:true});}}
+  return out;
+}
+function composeMin(list,mask){
+  if(!bodyLoop||bodyLoop.length<20)return null;
+  const lwv=lw(),carLen=carBoxPx?carBoxPx.x1-carBoxPx.x0:W*0.8,carH=carBoxPx?carBoxPx.y1-carBoxPx.y0:H*0.5,minRun=Math.max(8,carLen*0.02),eps=Math.max(0.3,+$('straight').value*SC);
+  const erM=maskFrom(eraseC,0),erased=c=>{const P=c.sm||c.p;if(!P||!P.length)return false;let k=0;for(const q of P)if(mAt(erM,q))k++;return k>P.length*0.5;};
+  const WH=(wheelMode==='orig'||wheelMode==='none')?[]:wheels.map(w=>({cx:w.x*W,cy:w.y*H,r:w.r*W}));
+  const bodyF=fillMask([{sm:bodyLoop}],0);for(const w of WH){} 
+  const TOUCH=Math.max(1,lwv*0.35);
+  const out=[];
+  // 1) Reifen: volle Kreise
+  const tires=WH.map((w,i)=>{const cub=arcCubics(w.cx,w.cy,w.r,0,2*Math.PI);return {cub,p:flatten(cub,12),closed:true,user:true,score:1e9,wheel:i};});
+  out.push(...tires);
+  const inside=erodeMask(bodyF,Math.max(1,lwv*0.6)),E=i=>lineE?lineE[i]:0;
+  // 2) Radläufe: Radius aus der KI-Zeichnung (Bogen über dem Rad), sonst 1,12 × Reifen
+  const bl=bodyLoop,nB=bl.length,cutB=new Uint8Array(nB),archDef=[];
+  for(const [wi,w] of WH.entries()){
+    let bestR=0,bs=0;
+    for(let R=Math.max(w.r*1.1,w.r+lwv*3.2);R<=w.r*1.4;R+=Math.max(1,w.r*0.01)){let s=0,n=0;
+      for(let a=-150;a<=-30;a+=3){const an=a*Math.PI/180,x=w.cx+Math.cos(an)*R,y=w.cy+Math.sin(an)*R;if(!mAt(inside,[x,y]))continue;n++;let bv=0;
+        for(let dd=-1;dd<=1;dd++){const xx=Math.round(w.cx+Math.cos(an)*(R+dd)),yy=Math.round(w.cy+Math.sin(an)*(R+dd));if(xx>=0&&yy>=0&&xx<W&&yy<H)bv=Math.max(bv,E(yy*W+xx));}
+        if(bv>35)s++;}
+      if(n>=20){const sc=s/41-0.15*(R/w.r-1);if(sc>bs){bs=sc;bestR=R;}}}
+    let R=bs>=0.4?bestR:Math.max(w.r*1.12,w.r+lwv*3.5),done=false;
+    for(let tries=0;tries<12&&!done&&R>w.r+lwv*2.5;tries++,R-=w.r*0.02){
+      // Stück des Umrisses innerhalb des Radlauf-Kreises, das um die Reifenunterseite läuft
+      const inC=bl.map(q=>Math.hypot(q[0]-w.cx,q[1]-w.cy)<R);let lo=-1,ly=-1e9;
+      for(let i=0;i<nB;i++)if(inC[i]&&Math.abs(bl[i][0]-w.cx)<w.r*0.5&&bl[i][1]>ly){ly=bl[i][1];lo=i;}
+      if(lo<0||ly<w.cy)break;
+      let i0=lo,i1=lo,c=0;while(inC[(i0-1+nB)%nB]&&c<nB){i0=(i0-1+nB)%nB;c++;}c=0;while(inC[(i1+1)%nB]&&c<nB){i1=(i1+1)%nB;c++;}
+      if(c>=nB-2)break;
+      const cross=(i,j)=>{const p=bl[i],q=bl[j],dp=Math.hypot(p[0]-w.cx,p[1]-w.cy),dq=Math.hypot(q[0]-w.cx,q[1]-w.cy),t=(R-dp)/((dq-dp)||1e-6);return [p[0]+(q[0]-p[0])*t,p[1]+(q[1]-p[1])*t];};
+      const P0=cross((i0-1+nB)%nB,i0),P1=cross((i1+1)%nB,i1);
+      let aA=Math.atan2(P0[1]-w.cy,P0[0]-w.cx),aB=Math.atan2(P1[1]-w.cy,P1[0]-w.cx);
+      // links beginnen, über den Scheitel (−π/2) nach rechts
+      let L0=P0,L1=P1;if(P0[0]>P1[0]){[aA,aB]=[aB,aA];[L0,L1]=[L1,L0];}
+      let a0=(aA+2*Math.PI)%(2*Math.PI),a1=(aB+2*Math.PI)%(2*Math.PI);if(a1<=a0)a1+=2*Math.PI;
+      if(a0>Math.PI*1.5||a1<Math.PI*1.5||a1-a0<Math.PI*0.6)continue;
+      // Bogen muss in der Karosserie liegen (sonst kleiner)
+      let ok=true;for(let a=a0+0.15;a<a1-0.15;a+=0.05)if(!mAt(bodyF,[w.cx+Math.cos(a)*R,w.cy+Math.sin(a)*R])){ok=false;break;}
+      if(!ok)continue;
+      for(let k=i0,c2=0;c2<nB;k=(k+1)%nB,c2++){cutB[k]=1;if(k===i1)break;}
+      archDef.push({wi,w,R,a0,a1,L0,L1,i0,i1});done=true;}
+  }
+  // 3) Umriss: Karosserie ohne Reifen, Enden exakt auf dem Radlauf bzw. Reifen
+  const bm=Math.max(3,lwv*1.5),bL=crop.x0<=0.001,bR=crop.x1>=0.999,bT=crop.y0<=0.001,bB=crop.y1>=0.999;
+  const noArch=WH.filter((w,i)=>!archDef.some(a=>a.wi===i));
+  const inTire=q=>noArch.some(w=>Math.hypot(q[0]-w.cx,q[1]-w.cy)<w.r+TOUCH*0.5);
+  const keep=bl.map((q,i)=>!cutB[i]&&!inTire(q)&&!mAt(erM,q)&&!((bL&&q[0]<bm)||(bR&&q[0]>W-1-bm)||(bT&&q[1]<bm)||(bB&&q[1]>H-1-bm)));
+  const snapEnd=(E0,A)=>{for(const a of archDef)for(const L of [a.L0,a.L1])if(Math.hypot(E0[0]-L[0],E0[1]-L[1])<Math.max(6,lwv*3))return L;
+    for(const w of noArch){const d=Math.hypot(E0[0]-w.cx,E0[1]-w.cy);if(d>w.r*1.35)continue;
+      let dx=E0[0]-A[0],dy=E0[1]-A[1];const L=Math.hypot(dx,dy)||1;dx/=L;dy/=L;
+      const fx=E0[0]-w.cx,fy=E0[1]-w.cy,b=fx*dx+fy*dy,c=fx*fx+fy*fy-w.r*w.r,disc=b*b-c;
+      if(disc>=0){const t=-b-Math.sqrt(disc);if(t>=0&&t<w.r*0.3)return [E0[0]+dx*t,E0[1]+dy*t];}
+      return [w.cx+fx*w.r/d,w.cy+fy*w.r/d];}return null;};
+  const outl=[];
+  for(const r of runsOf(bl,keep,true)){let P=r.pts;if(P.length<Math.max(10,20*SC)&&!r.closed)continue;
+    if(!r.closed){const k=Math.min(P.length-1,6),s=snapEnd(P[0],P[k]),e=snapEnd(P[P.length-1],P[P.length-1-k]);
+      if(s)P=[s].concat(P);if(e)P=P.concat([e]);}
+    outl.push(mkLine(P,r.closed,1e8,{outline:true,sm:P}));}
+  out.push(...outl);
+  // Radlauf-Bogen + kurze Stege hinunter zum Reifen (hält den Reifen fest)
+  const arches=[];
+  for(const a of archDef){const {w,R,a0,a1}=a;const cub=arcCubics(w.cx,w.cy,R,a0,a1);let P=flatten(cub,24);P[0]=a.L0;P[P.length-1]=a.L1;
+    const t0=[w.cx+Math.cos(a0)*w.r,w.cy+Math.sin(a0)*w.r],t1=[w.cx+Math.cos(a1)*w.r,w.cy+Math.sin(a1)*w.r];
+    P=[t0].concat(P,[t1]);
+    arches.push({sm:P,p:rdp(P,0.6),cub:[[t0,t0,a.L0,a.L0]].concat(cub.map((b,i)=>i===0?[a.L0,b[1],b[2],b[3]]:i===cub.length-1?[b[0],b[1],b[2],a.L1]:b),[[a.L1,a.L1,t1,t1]]),closed:false,arch:true,score:2e6,len:P.length,protect:true});}
+  out.push(...arches);let anchors=out.slice();
+  // 4) Fenster (Teile-Erkennung; sonst große geschlossene Flächen der KI-Zeichnung)
+  const gap=Math.max(lwv*1.6,0.009*carLen),winAllow=erodeMask(bodyF,gap);
+  let wins=windowItems().filter(c=>!erased(c));const side=wins.filter(w=>w.window);if(side.length)wins=side;
+  if(!wins.length&&!glassFaces)glassFaces=glassFacesFn();
+  if(!wins.length)wins=glassFaces.filter(pts=>{const hu=convexHull(pts),ha=Math.abs(polyArea(hu));return ha>0&&Math.abs(polyArea(pts))/ha>0.8;})
+    .sort((a,b)=>Math.abs(polyArea(b))-Math.abs(polyArea(a))).slice(0,2).map(pts=>({sm:roundPoly(simplifyLoop(resample(convexHull(pts),true,1.5),Math.max(1.5,0.006*carLen))),closed:true,window:true,protect:true,score:1e7})).filter(c=>!erased(c));
+  const winOut=[];
+  for(const w of wins){const P=clipClosedTo(w.sm,winAllow,carLen);if(!P)continue;
+    // nicht mit schon vorhandenen Fenstern überlappen
+    if(winOut.length){const f=fillMask(winOut,lwv);let o=0;for(const q of P)if(mAt(f,q))o++;if(o>P.length*0.3)continue;}
+    winOut.push(Object.assign({},w,{sm:P,p:rdp(P,0.6),closed:true,len:P.length,cub:null}));}
+  // fehlt eine Seitenscheibe (Teile-Erkennung unvollständig)? → passende geschlossene Fläche der KI-Zeichnung ergänzen
+  if(winOut.length&&winOut.length<3){if(!glassFaces)glassFaces=glassFacesFn();
+    let y0=1e9,y1=-1e9,amin=1e18;for(const w of winOut){for(const q of w.sm){y0=Math.min(y0,q[1]);y1=Math.max(y1,q[1]);}amin=Math.min(amin,Math.abs(polyArea(w.sm)));}
+    const f=fillMask(winOut,lwv*2);
+    for(const pts of glassFaces){const hu=convexHull(pts),ha=Math.abs(polyArea(hu)),a=Math.abs(polyArea(pts));if(!(ha>0&&a/ha>0.85)||a<amin*0.35)continue;
+      let o=0,cy=0;for(const q of pts){if(mAt(f,q))o++;cy+=q[1];}cy/=pts.length;if(o>pts.length*0.1||cy<y0||cy>y1)continue;
+      const P=clipClosedTo(roundPoly(simplifyLoop(resample(pts,true,1.5),Math.max(1.5,0.006*carLen))),winAllow,carLen);if(!P)continue;
+      winOut.push({sm:P,p:rdp(P,0.6),closed:true,len:P.length,window:true,protect:true,score:1e7});break;}}
+  out.push(...winOut);anchors=anchors.concat(winOut);
+  const winF=winOut.length?fillMask(winOut,lwv*1.4):null;
+  // 5) Spiegel und Lichter: Form behalten, aber nur innerhalb der Karosserie und außerhalb der Fenster
+  const clipOpen=(pts,m,tag)=>{const keep=pts.map(q=>mAt(inside,q)&&!(m&&mAt(m,q)));return runsOf(pts,keep,true).filter(r=>r.closed||r.pts.length>=minRun).map(r=>Object.assign({sm:r.pts,closed:r.closed,len:r.pts.length},tag));};
+  const shapes=[];
+  for(const p of carParts||[]){if(!p.mask)continue;
+    if(p.k==='Mirror'&&p.s>0.35){const pts=partShape(p,{minA:0.012*carLen,S:16,T:1.1,snapF:0.004,hull:true});if(pts)shapes.push(...clipOpen(pts,winF,{mirror:true,score:5e6}));}
+    else if(/light/i.test(p.k)&&p.s>0.25){const pts=partShape(p,{minA:0.012*carLen,S:22,T:1.4,snapF:0.004,hull:true});if(pts)shapes.push(...clipOpen(pts,winF,{light:true,score:4e6}));}}
+  // 6) Türfugen: lange, steile Linien des KI-Zeichners zwischen den Rädern
+  const ws2=WH.slice().sort((a,b)=>a.cx-b.cx),xa=ws2.length===2?ws2[0].cx+ws2[0].r:-1e9,xb=ws2.length===2?ws2[1].cx-ws2[1].r:1e9;
+  let wb=-1;for(const w of winOut)for(const q of w.sm)wb=Math.max(wb,q[1]);
+  const block=new Uint8Array(W*H);for(let i=0;i<block.length;i++)block[i]=inside[i]?0:1;
+  if(winF)for(let i=0;i<block.length;i++)if(winF[i])block[i]=1;
+  if(shapes.length){const sf=fillMask(shapes.filter(s=>s.closed),lwv*1.4);for(let i=0;i<block.length;i++)if(sf[i])block[i]=1;}
+  {const am=strokeMask(arches.concat(tires),lwv*2);for(let i=0;i<block.length;i++)if(am[i])block[i]=1;}
+  let doors=[];
+  const dsrc=list.filter(c=>!c.user&&!c.closed&&c.sm&&c.sm.length>=10).concat(doorEdges(carLen));
+  for(const c of dsrc){
+    for(const pc of cutCovered(Object.assign({},c,{closed:false}),block,minRun)){let P=pc.sm;
+      let y0=1e9,y1=-1e9,steep=0,L=0,mx=0;for(let i=1;i<P.length;i++){const dx=P[i][0]-P[i-1][0],dy=P[i][1]-P[i-1][1],l=Math.hypot(dx,dy);L+=l;steep+=Math.abs(dy);}
+      for(const q of P){y0=Math.min(y0,q[1]);y1=Math.max(y1,q[1]);mx+=q[0];}mx/=P.length;
+      {const st=Math.max(4,Math.round(0.012*carLen/1.5));const hz=i=>{const a=P[Math.max(0,i-st)],b=P[Math.min(P.length-1,i+st)];const dx=b[0]-a[0],dy=b[1]-a[1];return Math.abs(dy)<0.6*Math.hypot(dx,dy);};
+        let a=0,b=P.length-1;while(a<b&&hz(a))a++;while(b>a&&hz(b))b--;if(b-a<minRun)continue;if(a>0||b<P.length-1){P=P.slice(a,b+1);L=0;steep=0;y0=1e9;y1=-1e9;mx=0;for(let i=1;i<P.length;i++){const dx=P[i][0]-P[i-1][0],dy=P[i][1]-P[i-1][1];L+=Math.hypot(dx,dy);steep+=Math.abs(dy);}for(const q of P){y0=Math.min(y0,q[1]);y1=Math.max(y1,q[1]);mx+=q[0];}mx/=P.length;}}
+      if(steep/Math.max(1,L)>0.62&&y1-y0>carH*0.2&&mx>xa&&mx<xb&&(wb<0||y1>wb+carH*0.1))doors.push({sm:P,closed:false,door:true,score:3e6+L,len:P.length,mx,fromPart:!!c.fromPart});}}
+  doors.sort((a,b)=>(a.fromPart-b.fromPart)||(b.len-a.len));{const kd=[];for(const d of doors){if(kd.length>=3)break;if(kd.every(k=>Math.abs(k.mx-d.mx)>0.06*carLen))kd.push(d);}doors=kd.filter(d=>!erased(d));}
+  // 7) Enden anschließen: in Laufrichtung bis zur ersten Linie verlängern (oder kürzen), genau auf deren Mitte enden
+  const attach=(c,idx,maxRay,maxNear,pref)=>{let P=c.sm.slice();
+    for(const atStart of [true,false]){const n=P.length,Eq=atStart?P[0]:P[n-1];
+      const h0=idx.near(Eq,TOUCH);if(h0){if(atStart)P[0]=h0.p;else P[n-1]=h0.p;continue;}
+      const k=Math.min(n-1,Math.max(3,Math.round(lwv*3))),A=atStart?P[k]:P[n-1-k];let dx=Eq[0]-A[0],dy=Eq[1]-A[1];const L=Math.hypot(dx,dy)||1;dx/=L;dy/=L;
+      let hit=null;if(pref){const top=atStart?P[0][1]<P[n-1][1]:P[n-1][1]<P[0][1];const h=top?pref.near(Eq,carLen*0.06):null;if(h)hit=h.p;}
+      if(!hit)for(let s=1;s<=maxRay;s++){const q=[Eq[0]+dx*s,Eq[1]+dy*s];const h=idx.near(q,TOUCH);if(h){hit=h.p;break;}if(!mAt(bodyF,q))break;}
+      if(!hit){const h=idx.near(Eq,maxNear);if(h)hit=h.p;}
+      if(!hit)return null;
+      const seg=[];const d=Math.hypot(hit[0]-Eq[0],hit[1]-Eq[1]),m=Math.max(1,Math.round(d/1.5));for(let s=1;s<=m;s++)seg.push([Eq[0]+(hit[0]-Eq[0])*s/m,Eq[1]+(hit[1]-Eq[1])*s/m]);
+      P=atStart?seg.reverse().concat(P):P.concat(seg);}
+    return Object.assign({},c,{sm:P,len:P.length});};
+  const shapeOut=[];
+  {const idx=ptIndex(anchors,1);for(const s of shapes){if(s.closed){shapeOut.push(s);continue;}const a=attach(s,idx,lwv*4,lwv*3);if(a)shapeOut.push(a);}}
+  out.push(...shapeOut);anchors=anchors.concat(shapeOut);
+  const doorOut=[];
+  {for(const d of doors){const idx=ptIndex(anchors.concat(doorOut),1);const a=attach(d,idx,carLen*0.15,carLen*0.05,winOut.length?ptIndex(winOut,1):null);if(a)doorOut.push(a);}}
+  out.push(...doorOut);
+  // 8) Überstände: offene Linien auf das Stück zwischen erster und letzter Berührung kürzen
+  for(const c of out){if(c.closed||c.outline||c.wheel!==undefined||!c.sm)continue;
+    const others=ptIndex(out.filter(o=>o!==c),1),P=c.sm,n=P.length;let a=0,b=n-1;
+    for(let i=0;i<n;i++)if(others.near(P[i],TOUCH)){a=i;break;}
+    for(let i=n-1;i>=0;i--)if(others.near(P[i],TOUCH)){b=i;break;}
+    if(b-a>3&&(a>0||b<n-1))c.sm=P.slice(a,b+1);}
+  // 9) zusammenhängend machen: lose Teile mit kurzem Steg an den Rest
+  for(const c of out){if(!c.cub)c.cub=c.closed?fitPath(c.sm,true,eps):fitPath(c.sm,false,Math.max(0.3,eps*0.6));if(!c.p||!c.p.length)c.p=rdp(c.sm||flatten(c.cub,10),0.6);}
+  let res=out;
+  if($('connectAll').checked){
+    for(let it=0;it<6;it++){const r=rasterize(res),Lb=label(r);if(Lb.n<=1)break;
+      let main=1;for(let k=2;k<=Lb.n;k++)if(Lb.sizes[k]>Lb.sizes[main])main=k;
+      const labAt=q=>Lb.lab[Math.min(H-1,Math.max(0,Math.round(q[1])))*W+Math.min(W-1,Math.max(0,Math.round(q[0])))];
+      const comp=res.map(c=>{const cnt=new Map();let b=0,bv=0;for(const q of (c.sm||c.p)){const l=labAt(q);if(!l)continue;const v=(cnt.get(l)||0)+1;cnt.set(l,v);if(v>bv){bv=v;b=l;}}return b;});
+      const mainIdx=ptIndex(res.filter((c,i)=>comp[i]===main),1.5);const groups=new Map();res.forEach((c,i)=>{if(comp[i]&&comp[i]!==main){let g=groups.get(comp[i]);if(!g)groups.set(comp[i],g=[]);g.push(i);}});
+      const add=[],drop=new Set();
+      for(const [,idxs] of groups){let best=null;
+        for(const i of idxs){const c=res[i];for(const q of resample(c.sm||c.p,!!c.closed,2)){const h=mainIdx.near(q,best?best.d:carLen*0.2);if(h&&(!best||h.d<best.d))best={d:h.d,a:q,b:h.p};}}
+        const prot=idxs.some(i=>res[i].window||res[i].light||res[i].mirror||res[i].wheel!==undefined||res[i].outline);
+        if(best&&(prot||best.d<carLen*0.05)){const p=[best.a,best.b];add.push({sm:p,p,cub:[[best.a,[best.a[0]+(best.b[0]-best.a[0])/3,best.a[1]+(best.b[1]-best.a[1])/3],[best.a[0]+2*(best.b[0]-best.a[0])/3,best.a[1]+2*(best.b[1]-best.a[1])/3],best.b]],closed:false,bridge:true,score:0,len:best.d});}
+        else for(const i of idxs)drop.add(i);}
+      if(!add.length&&!drop.size)break;res=res.filter((c,i)=>!drop.has(i)).concat(add);}
+  }
+  res=res.concat(userItems()).concat(groundItem(res));
+  for(const c of res)delete c.sm;
+  return res;
+}
+function overhangs(list){ // Kontrolle: Linienenden, die über eine andere Linie hinausragen
+  const lwv=lw(),P=list.map(c=>{const q=c.cub&&c.cub.length?flatten(c.cub,12):c.p;return q&&q.length>1?resample(q,!!c.closed,1):[];});let n=0;const out=[];
+  list.forEach((c,ci)=>{if(c.closed||c.wheel!==undefined||c.ground)return;const p=P[ci];if(p.length<4)return;
+    for(const fs of [true,false]){let k=-1;for(let t=0;t<Math.min(p.length,lwv*8);t++){const q=fs?p[t]:p[p.length-1-t];let hit=false;
+        for(let j=0;j<list.length&&!hit;j++){if(j===ci||list[j]===c.parent||list[j].parent===c)continue;for(const r of P[j])if(Math.abs(r[0]-q[0])<lwv*0.5&&Math.abs(r[1]-q[1])<lwv*0.5){hit=true;break;}}
+        if(hit){k=t;break;}}
+      if(k>lwv*0.7){n++;out.push(fs?p[0]:p[p.length-1]);}}});
+  return {n,out};
+}
+function trimOverhangs(list,lwv,carLen){
+  // Jede offene Linie wird auf das Stück zwischen erster und letzter Berührung mit anderen Linien (oder einem Rad) gekürzt.
+  // Enden sitzen dann exakt auf der anderen Linie – nichts steht über, nichts hängt frei.
+  const TH=Math.max(1.5,lwv*0.45);
+  for(let pass=0;pass<3;pass++){
+    const cell=Math.max(8,lwv*3),grid=new Map(),K=(x,y)=>x+','+y;
+    const pts=list.map(c=>{const P=c.cub&&c.cub.length?flatten(c.cub,12):c.p;return P&&P.length>1?resample(P,!!c.closed,1):[];});
+    pts.forEach((P,ci)=>{for(const q of P){const k=K(Math.floor(q[0]/cell),Math.floor(q[1]/cell));let g=grid.get(k);if(!g)grid.set(k,g=[]);g.push(ci,q[0],q[1]);}});
+    const contact=(ci,q)=>{const gx=Math.floor(q[0]/cell),gy=Math.floor(q[1]/cell);let bd=TH,bp=null;
+      for(let a2=-1;a2<=1;a2++)for(let b2=-1;b2<=1;b2++){const g=grid.get(K(gx+a2,gy+b2));if(!g)continue;for(let j=0;j<g.length;j+=3){if(g[j]===ci)continue;const d=Math.hypot(g[j+1]-q[0],g[j+2]-q[1]);if(d<bd){bd=d;bp=[g[j+1],g[j+2]];}}}
+      for(const w of wheels){const cx=w.x*W,cy=w.y*H,r=w.r*W,d=Math.hypot(q[0]-cx,q[1]-cy);if(Math.abs(d-r)<bd){bd=Math.abs(d-r);bp=[cx+(q[0]-cx)*r/d,cy+(q[1]-cy)*r/d];}}
+      return bp;};
+    let changed=false;const drop=new Set();
+    list.forEach((c,ci)=>{
+      if(c.closed||c.wheel!==undefined||c.ground||c.user)return;const P=pts[ci],n=P.length;if(n<3)return;
+      let first=-1,last=-1,fp=null,lp=null;
+      for(let i=0;i<n;i++){const h=contact(ci,P[i]);if(h){first=i;fp=h;break;}}
+      for(let i=n-1;i>=0;i--){const h=contact(ci,P[i]);if(h){last=i;lp=h;break;}}
+      if(first<0||last-first<3){if(!c.outline){drop.add(ci);changed=true;}return;}
+      if(first===0&&last===n-1)return;
+      // Berührpunkt genauer: den Punkt mit minimalem Abstand in der Nähe suchen
+      const refine=(i0,dir)=>{let bi=i0,bd=1e9,bp=null;for(let t=0;t<Math.round(lwv*1.5);t++){const i=i0+dir*t;if(i<0||i>=n)break;const h=contact(ci,P[i]);if(!h)break;const d=Math.hypot(h[0]-P[i][0],h[1]-P[i][1]);if(d<bd){bd=d;bi=i;bp=h;}}return {i:bi,p:bp};};
+      const A=refine(first,1),B=refine(last,-1);
+      if(B.i-A.i<3){if(!c.outline){drop.add(ci);changed=true;}return;}
+      const sub=P.slice(A.i,B.i+1);sub[0]=A.p||sub[0];sub[sub.length-1]=B.p||sub[sub.length-1];
+      c.cub=fitPath(sub,false,Math.max(0.3,1.2*SC));c.p=rdp(sub,0.6);changed=true;
+    });
+    if(drop.size)list=list.filter((c,i)=>!drop.has(i));
+    list=list.filter(c=>!c.dockExt||!c.parent||list.includes(c.parent));
+    if(!changed)break;
+  }
+  return list;
+}
 function noCross(out,lwv,minRun){
   const rank=c=>c.outline||c.wheel!==undefined||c.window||c.user||c.ground?0:c.shield?0.5:c.mirror?1:c.light?2:c.door?3:c.arch?4:5;
   const sorted=out.slice().sort((a,b)=>rank(a)-rank(b));const kept=[];
@@ -1700,13 +2005,14 @@ function run(){
   const carLen=(carBoxPx?carBoxPx.x1-carBoxPx.x0:W*0.8),eps=Math.max(0.3,+$('straight').value*SC),weak=+$('weak').value*SC;
   if(useArt){
     const P=Object.assign({hi:40,lo:14,sig:1,minFrac:0.025,loopFrac:0.02,gap:1,fairT:0.5,fairS:1.1,keep:1},window.ARTP||{});
-    const rid=ridgeNMS(lineE,Math.max(0.8,P.sig*SC/0.8));
+    const sgm=Math.max(0.8,P.sig*SC/0.8);if(!(ridCache.e===lineE&&ridCache.s===sgm&&ridCache.W===W))ridCache={e:lineE,s:sgm,W,v:ridgeNMS(lineE,sgm)};const rid=ridCache.v;
     let e=hystOn(rid,P.hi,P.lo);
     if(region)for(let i=0;i<N;i++)e[i]&=region[i];
     prep(e);for(let i=0;i<N;i++)if(ad[i])e[i]=1;
     thin(e);
     // kleine geschlossene Flächen im Linienbild = Griffe, Tankdeckel, Blinker, Embleme
-    let faces=[];if($('detailLoops').checked){const S2=e.slice();faces=faceLoops(S2,lineE,P.hi*0.9,carLen);}
+    let faces=[];if($('detailLoops').checked&&artLevel!=='min'){const S2=e.slice();faces=faceLoops(S2,lineE,P.hi*0.9,carLen);}
+    {const e2=e.slice();glassFacesFn=()=>mask?windowFaces(e2,mask,carLen):[];}glassFaces=artLevel==='min'?null:glassFacesFn();
     let cs=chains(e);
     for(const c of cs){let s2=0,u=0;for(const i of c.ix){s2+=lineE[i];u+=ad[i];}c.len=c.ix.length;c.str=Math.min(2,s2/c.len/P.hi);c.user=u/c.len>0.5;}
     for(const c of cs){if(c.closed||c.p.length<14)continue;const a2=c.p[0],b2=c.p[c.p.length-1];if(Math.abs(a2[0]-b2[0])<=2&&Math.abs(a2[1]-b2[1])<=2){c.closed=true;c.p=c.p.slice(0,-1);}}
@@ -1777,12 +2083,17 @@ function run(){
   }
   let r,L,labOf;
   if(useArt){
-    list=(artLevel==='min'&&carParts.some(p=>p.mask&&GLASS.test(p.k)))?cleanTail(list,outl,eps,mask):artTail(list,outl,eps);
+    const cm=artLevel==='min'&&useOutline?composeMin(list,mask):null;
+    if(cm){list=cm;r=rasterize(list);L=label(r);}else{
+    list=artLevel==='min'?cleanTail(list,outl,eps,mask):artTail(list,outl,eps);
     r=rasterize(list);L=label(r);
     if(window.__DBG)console.log('pre-connect',list.length,'parts',L.n,'free',freeEnds(list));
     if($('connectAll').checked&&L.n>1){const o=connectParts(list);list=o.list;r=o.r;L=o.L;}
     if($('connectAll').checked&&freeEnds(list)>0){list=tieEnds(list,carBoxPx?carBoxPx.x1-carBoxPx.x0:W*0.8,lw(),eps);for(const c of list)delete c.sm;r=rasterize(list);L=label(r);if(L.n>1){const o=connectParts(list);list=o.list;r=o.r;L=o.L;}}
+    {const CL=carBoxPx?carBoxPx.x1-carBoxPx.x0:W*0.8;list=trimOverhangs(list,lw(),CL);r=rasterize(list);L=label(r);
+     if($('connectAll').checked&&L.n>1){const o=connectParts(list);list=trimOverhangs(o.list,lw(),CL);r=rasterize(list);L=label(r);}}
     if(window.__DBG)console.log('post-connect',list.length,'free',freeEnds(list));
+    }
     const at=pt=>L.lab[Math.min(H-1,Math.max(0,Math.round(pt[1])))*W+Math.min(W-1,Math.max(0,Math.round(pt[0])))];
     labOf=c=>{const P=c.cub&&c.cub.length?flatten(c.cub,4):c.p;const cnt=new Map();let b=0,bv=0;for(const q of P){const l=at(q);if(!l)continue;const v=(cnt.get(l)||0)+1;cnt.set(l,v);if(v>bv){bv=v;b=l;}}return b;};
   }else{
@@ -2288,6 +2599,84 @@ function stlFromLoops(loops,w,h,s,th,flip){
     for(const v of [nx/l,ny/l,nz/l,...a,...b,...c]){dv.setFloat32(o,v,true);o+=4;}dv.setUint16(o,0,true);o+=2;}
   return {buf,n};
 }
+/* ================= Claude als KI-Assistent (optional, Anthropic API) =================
+   Erkennt Marke/Modell und prüft die fertige Zeichnung: Linien, die nicht zum Auto gehören, fliegen raus. */
+const CLAUDE_MODEL='claude-opus-5';
+let claudeBusy=false,nameFromClaude=false;
+function claudeClient(){const k=$('claudeKey').value.trim();if(!k||typeof AnthropicSDK==='undefined')return null;return new AnthropicSDK({apiKey:k,dangerouslyAllowBrowser:true,maxRetries:1});}
+function claudeInfo(t){$('claudeInfo').innerHTML=t;}
+function canvasJpeg(c,maxW){let w=c.width,h=c.height;if(w>maxW){h=Math.round(h*maxW/w);w=maxW;}const t=document.createElement('canvas');t.width=w;t.height=h;t.getContext('2d').drawImage(c,0,0,w,h);return t.toDataURL('image/jpeg',0.88).split(',')[1];}
+function claudeErr(e){
+  if(typeof AnthropicSDK!=='undefined'){
+    if(e instanceof AnthropicSDK.AuthenticationError)return 'API-Schlüssel ungültig.';
+    if(e instanceof AnthropicSDK.PermissionDeniedError)return 'Kein Zugriff mit diesem Schlüssel.';
+    if(e instanceof AnthropicSDK.RateLimitError)return 'Zu viele Anfragen – kurz warten.';
+    if(e instanceof AnthropicSDK.APIConnectionError)return 'Keine Internetverbindung zu Claude.';
+    if(e instanceof AnthropicSDK.APIError)return 'Claude-Fehler '+(e.status||'')+'.';}
+  return esc(e&&e.message||String(e));
+}
+async function claudeJSON(content,schema,system){
+  const c=claudeClient();if(!c)throw new Error('Kein API-Schlüssel');
+  const r=await c.beta.messages.create({model:CLAUDE_MODEL,max_tokens:4096,system,
+    betas:['server-side-fallback-2026-07-01'],fallbacks:'default',
+    output_config:{effort:'low',format:{type:'json_schema',schema}},
+    messages:[{role:'user',content}]});
+  if(r.stop_reason==='refusal')throw new Error('Claude hat die Anfrage abgelehnt.');
+  const t=r.content.find(b=>b.type==='text');if(!t)throw new Error('Keine Antwort');
+  return JSON.parse(t.text);
+}
+async function claudeIdentify(g){
+  if(!claudeClient()||!$('claudeName').checked||!img)return;
+  const auto=!$('model').value.trim()||nameFromClaude;if(!auto)return;
+  const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;c.getContext('2d').drawImage(img,0,0);
+  claudeInfo('Claude erkennt Marke und Modell …');
+  try{
+    const r=await claudeJSON([{type:'image',source:{type:'base64',media_type:'image/jpeg',data:canvasJpeg(c,1024)}},
+      {type:'text',text:'Welches Auto ist das? Nenne die Marke in der üblichen Schreibweise (z. B. "Audi", "Mercedes-Benz", "Volkswagen") und das Modell so genau wie sicher erkennbar, inklusive Variante/Karosserie (z. B. "RS6 Avant", "Golf 8 GTI", "911 GT3 RS"). Sicherheit von 0 bis 1.'}],
+      {type:'object',properties:{marke:{type:'string'},modell:{type:'string'},sicherheit:{type:'number'}},required:['marke','modell','sicherheit'],additionalProperties:false},
+      'Du bist Autoexperte und erkennst Fahrzeuge auf Fotos präzise. Antworte nur mit den Feldern.');
+    if(g!==gen)return;
+    if(r.sicherheit>=0.4&&r.marke){$('brand').value=canonBrand(r.marke);$('model').value=cleanName(r.modell);nameFromClaude=true;refreshModelList();
+      claudeInfo(`Claude erkennt: <b>${esc(canonBrand(r.marke))} ${esc(r.modell)}</b> (${Math.round(r.sicherheit*100)} % sicher).`);}
+    else claudeInfo('Claude ist sich beim Modell nicht sicher – bitte Marke/Modell eintragen.');
+  }catch(e){claudeInfo('<span style="color:var(--warn)">'+claudeErr(e)+'</span>');}
+}
+/* Zeichnung prüfen: jede Linie bekommt eine Nummer, Claude sagt, welche weg sollen */
+function reviewCandidates(){return vec.filter(c=>!c.outline&&c.wheel===undefined&&!c.ground&&!c.uid&&!c.bridge&&!c.dockExt&&(c.cub&&c.cub.length||c.p));}
+async function claudeReview(g,manual){
+  if(!claudeClient()||(!manual&&!$('claudeReview').checked)||!bbox||claudeBusy)return;
+  const cand=reviewCandidates();if(!cand.length)return;
+  claudeBusy=true;claudeInfo('Claude prüft die Zeichnung …');
+  try{
+    const f=frame(),pad=20,cw=f.w+2*pad,ch=f.h+2*pad;
+    const ph=document.createElement('canvas');ph.width=cw;ph.height=ch;const px=ph.getContext('2d');px.fillStyle='#fff';px.fillRect(0,0,cw,ch);px.drawImage(photoC,f.x0-pad,f.y0-pad,cw,ch,0,0,cw,ch);
+    const ov=document.createElement('canvas');ov.width=cw;ov.height=ch;const ox=ov.getContext('2d');ox.fillStyle='#fff';ox.fillRect(0,0,cw,ch);
+    ox.globalAlpha=0.35;ox.drawImage(ph,0,0);ox.globalAlpha=1;ox.translate(pad-f.x0,pad-f.y0);
+    ox.lineCap='round';ox.lineJoin='round';
+    for(const c of vec)if(!cand.includes(c)){const P=c.cub&&c.cub.length?flatten(c.cub,10):c.p;if(!P)continue;ox.strokeStyle='#222';ox.lineWidth=Math.max(2,lw()*0.7);ox.beginPath();P.forEach((q,i)=>i?ox.lineTo(q[0],q[1]):ox.moveTo(q[0],q[1]));if(c.closed)ox.closePath();ox.stroke();}
+    const cols=['#e6194b','#3cb44b','#4363d8','#f58231','#911eb4','#42d4f4','#f032e6','#9a6324','#800000','#000075','#808000','#469990'];
+    cand.forEach((c,i)=>{const P=c.cub&&c.cub.length?flatten(c.cub,10):c.p;const col=cols[i%cols.length];ox.strokeStyle=col;ox.lineWidth=Math.max(3,lw());ox.beginPath();P.forEach((q,j)=>j?ox.lineTo(q[0],q[1]):ox.moveTo(q[0],q[1]));if(c.closed)ox.closePath();ox.stroke();
+      const m=P[Math.floor(P.length/2)],fs=Math.max(16,Math.round(f.w/70));ox.font=`bold ${fs}px sans-serif`;const t=String(i+1),tw=ox.measureText(t).width;
+      ox.fillStyle='#fff';ox.fillRect(m[0]-tw/2-4,m[1]-fs/2-3,tw+8,fs+6);ox.strokeStyle=col;ox.lineWidth=2;ox.strokeRect(m[0]-tw/2-4,m[1]-fs/2-3,tw+8,fs+6);ox.fillStyle=col;ox.textAlign='center';ox.textBaseline='middle';ox.fillText(t,m[0],m[1]+1);});
+    const r=await claudeJSON([
+      {type:'text',text:'Bild 1: Foto des Autos.'},{type:'image',source:{type:'base64',media_type:'image/jpeg',data:canvasJpeg(ph,1400)}},
+      {type:'text',text:'Bild 2: automatische Linienzeichnung darüber. Umriss und Räder sind schwarz, alle anderen Linien farbig mit Nummer.'},{type:'image',source:{type:'base64',media_type:'image/jpeg',data:canvasJpeg(ov,1400)}},
+      {type:'text',text:`Das wird ein minimalistisches Wandbild (Linienkunst) des Autos. Behalten sollen nur Linien, die ein Autodesigner zeichnen würde: Fensterrahmen, Türfugen, Radläufe/Kotflügelkanten, Scheinwerfer, Rückleuchten, Außenspiegel, markante Sicken. Nenne die Nummern der farbigen Linien, die WEG sollen, weil sie Spiegelungen, Schatten, Innenraum, Doppellinien, Fehlerkennungen oder falsch geformt sind (z. B. ein Fenster, das nicht zur echten Fensterform passt). Wenn alles passt, gib eine leere Liste zurück. Nummern 1 bis ${cand.length}.`}],
+      {type:'object',properties:{entfernen:{type:'array',items:{type:'integer'}},begruendung:{type:'string'}},required:['entfernen','begruendung'],additionalProperties:false},
+      'Du bist ein erfahrener Automobil-Designer und Illustrator. Du beurteilst Linienzeichnungen von Autos streng, aber entfernst nur, was wirklich nicht zum Auto gehört.');
+    if(g!==gen)return;
+    const del=(r.entfernen||[]).filter(k=>k>=1&&k<=cand.length).map(k=>cand[k-1]);
+    if(del.length){snapshot();for(const c of del){const path=new Path2D(pathD([c],0,0,1));const x=eraseC.getContext('2d');x.save();x.lineCap='round';x.lineJoin='round';x.lineWidth=lw()+10;x.strokeStyle='#000';x.stroke(path);x.restore();}run();}
+    claudeInfo(`<b>Claude hat geprüft</b>: ${del.length?del.length+' Linie'+(del.length>1?'n':'')+' entfernt':'alles passt'}. <span style="color:var(--muted)">${esc(r.begruendung||'').slice(0,300)}</span>`);
+  }catch(e){claudeInfo('<span style="color:var(--warn)">'+claudeErr(e)+'</span>');}
+  finally{claudeBusy=false;}
+}
+$('claudeNow').onclick=()=>{if(!claudeClient()){claudeInfo('Bitte zuerst den API-Schlüssel eintragen.');$('claudeKey').focus();return;}claudeReview(gen,true);};
+try{const k=localStorage.getItem('sw-claude-key');if(k)$('claudeKey').value=k;for(const id of ['claudeName','claudeReview']){const v=localStorage.getItem('sw-'+id);if(v!==null)$(id).checked=v==='1';}}catch(e){}
+$('claudeKey').addEventListener('change',()=>{try{localStorage.setItem('sw-claude-key',$('claudeKey').value.trim());}catch(e){}claudeInfo($('claudeKey').value.trim()?'Schlüssel gespeichert (nur auf diesem PC).':'Ohne Schlüssel arbeitet das Tool komplett offline.');});
+for(const id of ['claudeName','claudeReview'])$(id).addEventListener('change',()=>{try{localStorage.setItem('sw-'+id,$(id).checked?'1':'0');}catch(e){}});
+$('model').addEventListener('input',()=>{nameFromClaude=false;});
+
 /* ---- Dateien erzeugen (für Download und NAS) ---- */
 function exportRanges(){makePlan();let r=tileRanges();if($('mirror').checked)r=r.slice().reverse();return r;}
 const partName=(base,i,n,ext)=>n>1?`${base} Teil ${i+1} von ${n}.${ext}`:`${base}.${ext}`;
@@ -2362,7 +2751,7 @@ function guessFromName(fn){
   return {brand,model};
 }
 function applyNameGuess(fn){
-  const g=guessFromName(fn);
+  nameFromClaude=false;const g=guessFromName(fn);
   if(g.brand){$('brand').value=g.brand;$('model').value=g.model;}
   else $('model').value=''; // neues Auto: Modell leeren, Marke behalten
   refreshModelList();

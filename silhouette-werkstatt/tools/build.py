@@ -25,8 +25,9 @@ def build(out):
     app = open(os.path.join(ROOT, 'src', 'app.js'), encoding='utf-8').read()
     app = re.sub(r'/\*@ASSET (\w+) (\S+) (\S+)\*/', asset, app)
     earcut = open(A('earcut.min.js'), encoding='utf-8').read()
+    sdk = open(A('anthropic.min.js'), encoding='utf-8').read()
     scripts = ('<script>/* earcut 2.2.4 (ISC, Mapbox) – Triangulierung für den STL-Export */\n' + earcut +
-               '\n</script>\n<script>\n' + app + '\n</script>\n')
+               '\n</script>\n<script>/* Anthropic TypeScript SDK (MIT) – für den optionalen Claude-Assistenten */\n' + sdk.replace('</script','<\\/script') + '\n</script>\n<script>\n' + app + '\n</script>\n')
     html = html.replace('<!--@SCRIPTS-->\n', scripts)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     open(out, 'w', encoding='utf-8').write(html)

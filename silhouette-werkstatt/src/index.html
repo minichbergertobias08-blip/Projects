@@ -284,7 +284,7 @@ button.big svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width
         <summary><b>4</b>Linienstil</summary>
         <div class="body">
           <div class="ctl"><label for="thick">Linienstärke</label><output id="thickO"></output>
-            <input type="range" id="thick" min="0.5" max="14" step="0.5" value="3.5"></div>
+            <input type="range" id="thick" min="0.5" max="14" step="0.5" value="5"></div>
           <div class="ctl"><label for="curve">Kurven glätten</label><output id="curveO"></output>
             <input type="range" id="curve" min="0" max="40" step="1" value="22"></div>
           <div class="ctl"><label for="straight">Kurven straffen</label><output id="straightO"></output>
@@ -297,6 +297,18 @@ button.big svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width
           <div class="ctl"><label for="brush">Radierer-Größe</label><output id="brushO"></output>
             <input type="range" id="brush" min="6" max="160" step="2" value="40"></div>
           <div class="row"><button id="clearEdits">Alle eigenen Änderungen löschen</button></div>
+        </div>
+      </details>
+
+      <details open>
+        <summary><b>✦</b>Claude (KI-Assistent)</summary>
+        <div class="body">
+          <p class="hint">Claude sieht sich Foto und Zeichnung an: erkennt <b>Marke &amp; Modell</b> und wirft Linien raus, die nicht zum Auto gehören (Spiegelungen, Fehlerkennungen). Braucht Internet und einen eigenen API-Schlüssel von <b>console.anthropic.com</b> (kostet pro Foto ein paar Cent).</p>
+          <label class="fld" style="width:100%"><span>API-Schlüssel</span><input id="claudeKey" type="password" autocomplete="off" placeholder="sk-ant-…" style="width:100%"></label>
+          <label class="check"><input type="checkbox" id="claudeName" checked> Marke &amp; Modell automatisch erkennen</label>
+          <label class="check"><input type="checkbox" id="claudeReview" checked> Zeichnung von Claude prüfen lassen</label>
+          <div class="row"><button id="claudeNow">Jetzt von Claude prüfen lassen</button></div>
+          <p class="saveinfo" id="claudeInfo">Ohne Schlüssel arbeitet das Tool komplett offline.</p>
         </div>
       </details>
 
