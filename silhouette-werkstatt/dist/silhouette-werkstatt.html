@@ -463,7 +463,7 @@ function setupRes(reset,noRun){
     else{const t=document.createElement('canvas');t.width=nW;t.height=nH;t.getContext('2d').drawImage(m,0,0,nW,nH);m.width=nW;m.height=nH;m.getContext('2d').drawImage(t,0,0);}
   }
   const changed=(W!==nW||H!==nH);
-  W=nW;H=nH;view.width=over.width=rasC.width=W;view.height=over.height=rasC.height=H;gradKey='';wheelKey='';maskKey='';if(changed){teedE=null;lineE=null;}applyView();if(!noRun)run();
+  W=nW;H=nH;view.width=over.width=rasC.width=W;view.height=over.height=rasC.height=H;gradKey='';grad=null;magN=null;gdx=null;gdy=null;wheelKey='';maskKey='';if(changed){teedE=null;lineE=null;}applyView();if(!noRun)run();
 }
 
 /* ================= Bildanalyse ================= */
@@ -636,7 +636,8 @@ function freeEnds(list,pts){ // Anzahl frei endender Linien (zur Kontrolle)
   list.forEach((c,ci)=>{if(c.closed||c.wheel!==undefined||c.ground)return;const p=P[ci];if(!p||p.length<2)return;
     for(const E of [p[0],p[p.length-1]]){let t=false;for(let j=0;j<list.length&&!t;j++){if(j===ci)continue;for(const q of P[j]||[])if(Math.hypot(q[0]-E[0],q[1]-E[1])<lwv*1.2){t=true;break;}}if(!t){n++;if(pts)pts.push([E[0],E[1],c.outline?'o':c.dockExt?'x':c.bridge?'b':'l']);}}});
   return n;}
-function tieEnds(out,carLen,lwv,eps){
+function tieEnds(out,carLen,lwv,eps,o){
+  o=o||{};const RAY=o.ray||0.12,NEAR=o.near||0.05;
   const ptsOf=c=>c.sm||(c.cub&&c.cub.length?flatten(c.cub,10):c.p);
   for(const c of out)if(!c.sm)c.sm=ptsOf(c);
   const tieable=c=>!c.closed&&c.wheel===undefined&&!c.ground&&!c.user&&!c.dockExt&&c.sm&&c.sm.length>=4;
@@ -659,10 +660,10 @@ function tieEnds(out,carLen,lwv,eps){
         const k=Math.min(n-1,Math.max(2,Math.round(lwv*2))),A=atStart?P[k]:P[n-1-k];
         let dx=E[0]-A[0],dy=E[1]-A[1];const L=Math.hypot(dx,dy)||1;dx/=L;dy/=L;
         let hit=null;
-        for(let st=lwv;st<=carLen*0.12;st+=Math.max(1,lwv*0.4)){const q=[E[0]+dx*st,E[1]+dy*st];if(q[0]<1||q[1]<1||q[0]>=W-1||q[1]>=H-1)break;
+        for(let st=lwv;st<=carLen*RAY;st+=Math.max(1,lwv*0.4)){const q=[E[0]+dx*st,E[1]+dy*st];if(q[0]<1||q[1]<1||q[0]>=W-1||q[1]>=H-1)break;
           const nb=nearest(ci,q,lwv*0.6,null);if(nb){hit=nb;break;}}
         const short=c.len<carLen*0.12&&!c.outline;
-        if(!hit)hit=nearest(ci,E,carLen*(short?0.025:0.05),[dx,dy]);
+        if(!hit)hit=nearest(ci,E,carLen*(short?Math.min(0.025,NEAR):NEAR),[dx,dy]);
         if(!hit&&c.outline)hit=nearest(ci,E,carLen*0.1,null);
         if(hit)ties.push({c,ci,E,dir:[dx,dy],hit});
         else if(!c.outline)drop.add(ci);
@@ -700,7 +701,7 @@ function loadScript(src){return new Promise((res,rej)=>{const s=document.createE
 let ortWorker=null;
 const ORT_WORKER_SRC=`let S={},n=0;
 self.onmessage=async e=>{const m=e.data;try{
- if(m.t==='init'){importScripts(m.ortUrl);ort.env.wasm.wasmBinary=m.wasm;ort.env.wasm.wasmPaths={mjs:m.mjsUrl};ort.env.wasm.numThreads=1;postMessage({id:m.id,ok:1});}
+ if(m.t==='init'){(0,eval)(m.ortSrc+';self.ort=ort;');ort.env.wasm.wasmBinary=m.wasm;ort.env.wasm.wasmPaths={mjs:URL.createObjectURL(new Blob([m.mjsSrc],{type:'text/javascript'}))};ort.env.wasm.numThreads=1;postMessage({id:m.id,ok:1});}
  else if(m.t==='create'){const s=await ort.InferenceSession.create(m.bytes,{executionProviders:['wasm'],graphOptimizationLevel:'all'});const k=++n;S[k]=s;postMessage({id:m.id,ok:1,k,inputNames:s.inputNames,outputNames:s.outputNames});}
  else if(m.t==='run'){const s=S[m.k],f={};for(const k in m.feeds){const v=m.feeds[k];f[k]=new ort.Tensor(v.type,v.data,v.dims);}
   const o=await s.run(f),r={},tr=[];for(const k in o){r[k]={data:o[k].data,dims:o[k].dims};tr.push(o[k].data.buffer);}postMessage({id:m.id,ok:1,out:r},tr);}
@@ -712,14 +713,17 @@ async function startOrtWorker(){
   w.onerror=e=>{for(const p of q.values())p.rej(new Error('Worker-Fehler'));q.clear();};
   const call=(msg,tr)=>new Promise((res,rej)=>{const id=++wid;q.set(id,{res,rej});w.postMessage(Object.assign(msg,{id}),tr||[]);});
   const wasm=await new Response(new Blob([b64u8(ORT_WASM_GZ)]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
-  await call({t:'init',ortUrl:URL.createObjectURL(new Blob([ORT_JS],{type:'text/javascript'})),mjsUrl:URL.createObjectURL(new Blob([ORT_MJS],{type:'text/javascript'})),wasm},[wasm]);
+  await call({t:'init',ortSrc:ORT_JS,mjsSrc:ORT_MJS,wasm},[wasm]);
+  // Probelauf, damit ein kaputter Worker sofort auffällt
   ortWorker=w;
   window.ort={Tensor:class{constructor(type,data,dims){this.type=type;this.data=data;this.dims=dims;}},
     env:{wasm:{}},
     InferenceSession:{create:async bytes=>{const r=await call({t:'create',bytes},[bytes.buffer]);
       return {inputNames:r.inputNames,outputNames:r.outputNames,run:async feeds=>{const f={};for(const k in feeds){const v=feeds[k];f[k]={type:v.type,data:v.data,dims:v.dims};}return (await call({t:'run',k:r.k,feeds:f})).out;}};}}};
 }
-async function ensureOrt(){
+let ortInit=null;
+function ensureOrt(){if(ortSess)return Promise.resolve(ortSess);if(!ortInit)ortInit=ensureOrt0().catch(e=>{ortInit=null;throw e;});return ortInit;}
+async function ensureOrt0(){
   if(ortSess)return ortSess;
   if(ortState==='failed')throw new Error('offline');
   ortState='loading';aiStatus();if(pipeBusy)setProgress(1,'KI wird gestartet …');
@@ -861,7 +865,7 @@ function windowItems(){
   for(const p of carParts){if(!p.mask||p.s<0.25||!GLASS.test(p.k))continue;const pts=partShape(p,{hull:true});if(!pts)continue;
     {let per=0;for(let i=0;i<pts.length;i++){const a=pts[i],b=pts[(i+1)%pts.length];per+=Math.hypot(a[0]-b[0],a[1]-b[1]);}
      const th=2*Math.abs(polyArea(pts))/Math.max(1,per),carLen=carBoxPx?carBoxPx.x1-carBoxPx.x0:W*0.8;if(th<carLen*0.012)continue;} // schmaler Streifen (Frontscheibe von der Seite) → weglassen
-    out.push({sm:pts,p:rdp(pts,0.6),closed:true,len:pts.length,str:2,score:1e7,user:false,protect:true,window:true});}
+    out.push({sm:pts,p:rdp(pts,0.6),closed:true,len:pts.length,str:2,score:1e7,user:false,protect:true,window:!/shield/i.test(p.k),shield:/shield/i.test(p.k)});}
   return out;
 }
 function wheelsFromParts(){
@@ -1110,7 +1114,11 @@ function removeTongues(pts){
   return out;
 }
 /* Außenkontur aus der Maske, ohne die Reifen */
+function openMask(m,r){ // Öffnen: dünne Auswüchse (Antenne, Dachträger-Spitzen) verschwinden, Form bleibt
+  if(r<1)return m;const e=erodeMask(m,r),f=new Float32Array(W*H);for(let i=0;i<f.length;i++)f[i]=e[i];
+  const b=boxBlur(f,Math.round(r)),o=new Uint8Array(W*H);for(let i=0;i<o.length;i++)o[i]=b[i]>1e-6&&m[i]?1:0;return o;}
 function outlineItems(m,er){
+  {const bb0=maskBox(m);if(bb0&&artLevel==='min')m=openMask(m,Math.max(3,0.011*(bb0.x1-bb0.x0)));}
   const bb=maskBox(m);if(!bb)return [];
   const x0=Math.max(0,bb.x0-2),y0=Math.max(0,bb.y0-2),w=Math.min(W,bb.x1+3)-x0,h=Math.min(H,bb.y1+3)-y0,sub=new Uint8Array(w*h);
   for(let y=0;y<h;y++)for(let x=0;x<w;x++)sub[y*w+x]=m[(y+y0)*W+x+x0];
@@ -1818,10 +1826,11 @@ function fillMask(items,grow){
 function cleanTail(list,outl,eps,mask){
   const lwv=lw(),carLen=carBoxPx?carBoxPx.x1-carBoxPx.x0:W*0.8,carH=carBoxPx?carBoxPx.y1-carBoxPx.y0:H*0.5,minRun=Math.max(8,carLen*0.02);
   const fixed=userItems().concat(wheelItems());
-  const wins=windowItems(),mirr=[],lights=[];
+  let wins=windowItems();const side=wins.filter(w=>w.window);if(side.length)wins=side; // Front-/Heckscheibe von der Seite = schmaler Streifen → weglassen
+  const mirr=[],lights=[];
   for(const p of carParts){if(!p.mask)continue;
-    if(p.k==='Mirror'&&p.s>0.35){const pts=partShape(p,{minA:0.012*carLen,S:10,T:0.7,snapF:0.005});if(pts)mirr.push({sm:pts,closed:true,len:pts.length,score:5e6,mirror:true});}
-    else if(/light/i.test(p.k)&&p.s>0.25){const pts=partShape(p,{minA:0.012*carLen,S:12,T:0.8,snapF:0.005});if(pts)lights.push({sm:pts,closed:true,len:pts.length,score:4e6,light:true});}}
+    if(p.k==='Mirror'&&p.s>0.35){const pts=partShape(p,{minA:0.012*carLen,S:16,T:1.1,snapF:0.004,hull:true});if(pts)mirr.push({sm:pts,closed:true,len:pts.length,score:5e6,mirror:true});}
+    else if(/light/i.test(p.k)&&p.s>0.25){const pts=partShape(p,{minA:0.012*carLen,S:22,T:1.4,snapF:0.004,hull:true});if(pts)lights.push({sm:pts,closed:true,len:pts.length,score:4e6,light:true});}}
   // Türfugen: lange, steile Linien des KI-Zeichners
   const doors=[],arches=[];
   for(const c of list){if(c.user||c.closed||!c.sm||c.sm.length<10)continue;const P=c.sm;
@@ -1852,15 +1861,47 @@ function cleanTail(list,outl,eps,mask){
   // Doppel-Türfugen / Doppel-Radläufe zusammenfassen
   const dedupe=(arr,wd)=>{arr.sort((a,b)=>b.score-a.score);const occ=new Uint8Array(W*H),keep=[];
     for(const c of arr){const pieces=cutCovered(c,occ,minRun);for(const q of pieces){keep.push(q);const m=strokeMask([q],lwv*wd);for(let i=0;i<occ.length;i++)if(m[i])occ[i]=1;}}return keep;};
-  D=dedupe(D,4);A=dedupe(A,4);
+  D=dedupe(D,4);
+  // Radläufe als saubere Kreisbögen um das Rad (ein Bogen pro Rad)
+  {const arcs=[];for(const w of wheels){const cx=w.x*W,cy=w.y*H,r=w.r*W;let best=null;
+      for(const c of A){let n=0,sd=0,a0=9,a1=-9;for(const q of c.sm){const d=Math.hypot(q[0]-cx,q[1]-cy);if(d<r*1.02||d>r*1.55)continue;n++;sd+=d;let an=Math.atan2(q[1]-cy,q[0]-cx)+Math.PI/2;if(an>Math.PI)an-=2*Math.PI;a0=Math.min(a0,an);a1=Math.max(a1,an);}
+        if(n<c.sm.length*0.7)continue;const R=sd/n,sc=(a1-a0)*R;if(!best||sc>best.sc)best={R,a0,a1,sc};}
+      if(best&&best.a1-best.a0>1.2){const cub=arcCubics(cx,cy,best.R,best.a0-Math.PI/2,best.a1-Math.PI/2);arcs.push({sm:flatten(cub,24),closed:false,arch:true,score:2e6,len:best.sc});}}
+    A=arcs;}
+  if(wins.length){let wb=0;for(const w of wins)for(const q of w.sm)wb=Math.max(wb,q[1]);wb-=lwv;
+    D=D.filter(c=>{let my=0;for(const q of c.sm)my=Math.max(my,q[1]);return my>wb+carH*0.1;});}
   let out=fixed.concat(outl,wins,M,Li,D,A);
   // Überstände abschneiden: eine Linie endet genau dort, wo sie auf eine andere trifft
-  out=trimOvershoot(out,lwv,carLen);
+  out=noCross(out,lwv,minRun);
   for(const c of out)if(!c.cub&&c.sm)c.cub=fitPath(c.sm,c.closed,eps);
   out=out.concat(groundItem(out));
-  if($('connectAll').checked)out=tieEnds(out,carLen,lwv,eps);
+  if($('connectAll').checked)out=tieEnds(out,carLen,lwv,eps,{ray:0.04,near:0.03});
   for(const c of out){if(!c.p||!c.p.length)c.p=rdp(c.cub&&c.cub.length?flatten(c.cub,10):c.sm,0.6);delete c.sm;}
   return out;
+}
+/* Keine Überstände: eine Linie darf andere berühren, aber nicht darüber hinausragen.
+   Rangfolge: Umriss/Räder/Fenster > Spiegel > Lichter > Türfugen > Radläufe. Von jeder Linie bleibt nur das
+   längste Stück zwischen zwei Berührungen – die Enden sitzen damit genau auf den anderen Linien. */
+function noCross(out,lwv,minRun){
+  const rank=c=>c.outline||c.wheel!==undefined||c.window||c.user||c.ground?0:c.shield?0.5:c.mirror?1:c.light?2:c.door?3:c.arch?4:5;
+  const sorted=out.slice().sort((a,b)=>rank(a)-rank(b));const kept=[];
+  for(const c of sorted){
+    if(rank(c)===0||!c.sm){kept.push(c);continue;}
+    const occ=strokeMask(kept,Math.max(2,lwv*1.05)),P=c.sm,n=P.length,cov=P.map(q=>mAt(occ,q));
+    if(c.closed&&!cov.some(v=>v)){kept.push(c);continue;}
+    // freie Abschnitte
+    const runs=[];let a=-1;for(let i=0;i<=n;i++){const f=i<n&&!cov[i];if(f&&a<0)a=i;if(!f&&a>=0){runs.push([a,i]);a=-1;}}
+    if(c.closed&&runs.length>1&&runs[0][0]===0&&runs[runs.length-1][1]===n){const l=runs.pop();runs[0]=[l[0]-n,runs[0][1]];}
+    if(!runs.length)continue;
+    // geschlossene Formen (Spiegel/Lichter): alle freien Stücke behalten (Form bleibt erkennbar); offene Linien: nur das längste
+    const use=c.closed?runs:[runs.reduce((p,q)=>q[1]-q[0]>p[1]-p[0]?q:p)];
+    for(const [ra,rb] of use){if(rb-ra<minRun)continue;
+      // Enden um ein Stück zurück auf die berührte Linie legen (Berührung statt Lücke)
+      const ext=Math.round(lwv*0.6),s0=ra-(ra>0||c.closed?ext:0),s1=rb+(rb<n||c.closed?ext:0);
+      const sub=[];for(let i=s0;i<s1;i++){if(!c.closed&&(i<0||i>=n))continue;sub.push(P[((i%n)+n)%n]);}
+      kept.push(Object.assign({},c,{sm:sub,p:rdp(sub,0.6),closed:false,len:sub.length,cub:null}));}
+  }
+  return kept;
 }
 function trimOvershoot(out,lwv,carLen){
   for(let ci=0;ci<out.length;ci++){const c=out[ci];if(c.closed||c.outline||c.wheel!==undefined||c.user||!c.sm||c.sm.length<8)continue;
@@ -1884,7 +1925,7 @@ function artTail(list,outl,eps){
     list=list.filter(c=>{if(c.user)return true;let k=0;for(const q of c.sm)if(mAt(gm,q))k++;return k/c.sm.length<0.5;});
     list=list.flatMap(c=>c.user?[c]:cutCovered(c,gm,minRun));}
   // 1) was am Umriss / an den Rädern entlangläuft, ist doppelt
-  const om=strokeMask(outl.concat(fixed.filter(c=>c.wheel!==undefined||c.window)),lwv*P.olW);
+  const om=strokeMask(outl.concat(fixed.filter(c=>c.wheel!==undefined||c.window||c.shield)),lwv*P.olW);
   let cand=[];for(const c of list){if(c.user){cand.push(c);continue;}cand.push(...cutCovered(c,om,minRun));}
   // 2) parallele Doppellinien: stärkere Linie gewinnt, von der schwächeren bleibt nur, was frei liegt
   // kleine geschlossene Formen (Griffe, Tankdeckel, Blinker) zuerst – sie sind fast immer echte Details
@@ -1930,7 +1971,8 @@ function run(){
   if(mask0)box=maskBox(mask0);
   else if(poly.length>=3){let a=1,b=0,c=1,d=0;for(const p of poly){a=Math.min(a,p.x);b=Math.max(b,p.x);c=Math.min(c,p.y);d=Math.max(d,p.y);}box={x0:a*W,x1:b*W,y0:c*H,y1:d*H};}
   carBoxPx=box;SC=Math.min(3,Math.max(0.25,(box?box.x1-box.x0:W*0.8)/2000));
-  computeGrad();
+  const lazyGrad=!!lineE&&!!teedE&&$('artOn').checked&&$('autoOn').checked; // Foto-Gradienten nur, wenn wirklich nötig (spart ~1 s)
+  if(!lazyGrad)computeGrad();
   const hi=+$('hi').value,lo=hi*(+$('lo').value)/100;
   const ad=maskFrom(addC,90),er=maskFrom(eraseC,0);
   let polyRegion=null;
@@ -1938,11 +1980,12 @@ function run(){
     px.beginPath();poly.forEach((p,i)=>i?px.lineTo(p.x*W,p.y*H):px.moveTo(p.x*W,p.y*H));px.closePath();px.fill();polyRegion=maskFrom(pc,127);}
   // Räder (vor dem Schatten-Trimmen)
   if(!wheelsManual){const wk=gradKey+'|'+hi+'|'+lo+'|'+JSON.stringify(poly)+'|'+maskKey+'|'+(teedE?teedRectKey:'')+'|'+artKey+'|'+(carParts?carParts.length:0);
-    if(wk!==wheelKey){wheelKey=wk;let ew=hysteresis(hi*0.8,lo);
+    if(wk!==wheelKey){wheelKey=wk;
+      wheels=wheelsFromParts();let ew=null;
+      if(wheels.length<2){computeGrad();ew=hysteresis(hi*0.8,lo);
       if(mask0){const f=new Float32Array(N);for(let i=0;i<N;i++)f[i]=mask0[i];const b=boxBlur(f,Math.round(6*SC));for(let i=0;i<N;i++)if(b[i]<=0)ew[i]=0;}
       else if(polyRegion)for(let i=0;i<N;i++)ew[i]&=polyRegion[i];
-      wheels=wheelsFromParts();
-      if(wheels.length<2)wheels=detectWheels(ew,carBox(ew));
+      wheels=detectWheels(ew,carBox(ew));}
       if(wheels.length<2&&lineE&&teedE!==lineE){ // zweiter Versuch mit dem Linienbild des KI-Zeichners
         const k1=teedE,k2=gdx,k3=gdy,k4=magN,nn=lineNormals(lineE),e2=new Uint8Array(N);
         for(let i=0;i<N;i++)if(lineE[i]>30&&ew.length&&(!mask0||true))e2[i]=1;
@@ -2221,6 +2264,7 @@ function paint(a,b){
   else if(tool==='pen'){stroke(addC,a,b,2.5,false);stroke(eraseC,a,b,4,true);}
 }
 function snapPt(p,noSnap){
+  if(!noSnap&&$('snap').checked&&!grad&&img)computeGrad();
   if(noSnap||!$('snap').checked||!grad)return {x:p.x,y:p.y};
   const px=pxs(),r=Math.max(2,Math.round(9*px)),th=+$('hi').value*0.35;
   const cx=Math.round(p.x),cy=Math.round(p.y);let best=null,bs=0;
