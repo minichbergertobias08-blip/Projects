@@ -7,13 +7,18 @@ Foto rein → saubere Auto-Linienzeichnung (Wandbild) raus. Läuft komplett offl
 - **Speichern:** Marke + Modell oben eintragen, „Speichern“ → legt die Dateien in
   `\\mnas01\Shop\Shop\3D Dateien\2D Auto Wandbild\<Marke>\<Modell>.*` ab (Ordner einmal wählen).
 
-## Selbst anpassen (Stil „Minimal“)
-Panel **„Was soll drauf?“** – Häkchen weg = Bauteil verschwindet sofort:
-Fenster (auch „als eine Linie“), Türlinien, Radläufe, Felgen (Ring + 5 Speichen), Lichter, Spiegel,
-Antenne/Höcker auf dem Dach weglassen. Regler: Radlauf-Abstand, Fenster-Abstand zum Dach, Anzahl Türlinien.
+## Wandbild-Standard (automatisch)
+Außenkontur mit offenen Radhäusern (Kreisbögen bis zum Boden, keine Räder), Fenster mit Säulen,
+Türfugen bis zum Schweller, Türgriffe, Spiegel, Scheinwerfer/Rückleuchte, Schwellerlinie, Charakterlinien.
+Front immer rechts (wird automatisch gespiegelt), Linienbreite fest 2,0 mm bei 250 mm Breite.
 
-Werkzeuge links: **D** Linie anklicken = löschen · **N** Punkte setzen = neue glatte Linie ·
-**G** Gerade · **K** Kreis · **V** Punkte/Räder verschieben · **R** Radierer.
+## Selbst anpassen
+Panel **„Was soll drauf?“** – Häkchen weg = Bauteil verschwindet sofort (Fenster, Türlinien, Türgriffe,
+Schwellerlinie, Räder statt offener Radhäuser, Lichter, Spiegel, Zusatzlinien, Antenne weglassen).
+
+Werkzeuge links: **V** jede Linie anklicken und ziehen = verschieben, Punkte ziehen = Form ändern,
+Doppelklick = Punkt einfügen, Alt+Klick = Punkt löschen, Entf = Linie löschen ·
+**D** Linie löschen · **N** Punkte setzen = neue glatte Linie · **G** Gerade · **K** Kreis · **R** Radierer · Strg+Z zurück.
 
 Regeln, die immer gelten: alles ist ein zusammenhängendes Teil, Linien berühren sich nur, nichts steht über.
 
