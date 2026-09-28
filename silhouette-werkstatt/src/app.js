@@ -879,7 +879,7 @@ function roofClean(m){ // Dachantenne / Haifischflosse / kleine Höcker auf dem 
   return changed&&changed<L*0.15?o:m;
 }
 function outlineItems(m,er){
-  {const bb0=maskBox(m);if(bb0&&artLevel==='min'){m=openMask(m,Math.max(2,0.005*(bb0.x1-bb0.x0)));if($('noAntenna').checked)m=roofClean(m);
+  {const bb0=maskBox(m);if(bb0){m=openMask(m,Math.max(2,0.005*(bb0.x1-bb0.x0)));if($('noAntenna').checked)m=roofClean(m);
     {const rc=Math.max(2,Math.round(0.012*(bb0.x1-bb0.x0)));m=erodeMask(boxCountOp(m,rc,false),rc);}}} // Schließen: kleine Kerben/Zacken im Umriss füllen
   const bb=maskBox(m);if(!bb)return [];
   const x0=Math.max(0,bb.x0-2),y0=Math.max(0,bb.y0-2),w=Math.min(W,bb.x1+3)-x0,h=Math.min(H,bb.y1+3)-y0,sub=new Uint8Array(w*h);
@@ -1818,7 +1818,7 @@ function composeMin(list,mask){
       const P=clipClosedTo(roundPoly(simplifyLoop(resample(hu,true,1.5),Math.max(1.5,0.006*carLen))),winAllow,carLen);if(!P)continue;
       winOut.push({sm:P,p:rdp(P,0.6),closed:true,len:P.length,window:true,protect:true,score:1e7});break;}}
   // alle Seitenscheiben zu EINER Fensterlinie (Glasfläche mit Säulen dazwischen) zusammenfassen
-  if(winOut.length>1&&$('winOne').checked){const f=fillMask(winOut,0),rc=Math.max(3,Math.round(0.035*carLen));
+  if(winOut.length>1&&$('winOne').checked&&artLevel==='min'){const f=fillMask(winOut,0),rc=Math.max(3,Math.round(0.035*carLen));
     const cl=erodeMask(boxCountOp(f,rc,false),rc);for(let i=0;i<cl.length;i++)if(!winAllow[i])cl[i]=0;
     const bb=maskBox(cl);if(bb){const w=bb.x1-bb.x0+1,h=bb.y1-bb.y0+1,sub=new Uint8Array(w*h);for(let y=0;y<h;y++)for(let x=0;x<w;x++)sub[y*w+x]=cl[(y+bb.y0)*W+x+bb.x0];
       const loops=traceContours(sub,w,h);let best=null,ba=0;for(const l of loops){const a=Math.abs(polyArea(l));if(a>ba){ba=a;best=l;}}
@@ -1893,6 +1893,27 @@ function composeMin(list,mask){
   for(const d of doors)d.sm=fairDoor(d.sm);
   {for(const d of doors){const idx=ptIndex(anchors.concat(doorOut),1);const a=attach(d,idx,carLen*0.15,carLen*0.05,winOut.length?ptIndex(winOut,1):null);if(a)doorOut.push(a);}}
   out.push(...doorOut);
+  // 7b) Stil „Mittel“/„Detail“: zusätzliche Charakterlinien der KI-Zeichnung (Schulterlinie, Schweller, Säulen, Lichtkanten)
+  //     – nur lange, ruhige Linien, geglättet, an beiden Enden sauber angeschlossen, keine Doppellinien
+  if(artLevel!=='min'&&$('pExtra').checked){
+    const maxN=artLevel==='det'?14:7,minL=carLen*(artLevel==='det'?0.05:0.09),occ=new Uint8Array(W*H);
+    for(let i=0;i<occ.length;i++)occ[i]=block[i];
+    const markOcc=items=>{const m=strokeMask(items,lwv*4.5);for(let i=0;i<m.length;i++)if(m[i])occ[i]=1;};
+    markOcc(out.filter(c=>c.sm||c.p));
+    const cands=[];
+    for(const c of list){if(c.user||!c.sm||c.sm.length<10)continue;
+      for(const pc of cutCovered(Object.assign({},c,{closed:false}),occ,minRun)){const P=pc.sm;let L=0;for(let i=1;i<P.length;i++)L+=Math.hypot(P[i][0]-P[i-1][0],P[i][1]-P[i-1][1]);
+        if(L<minL)continue;const ch=Math.hypot(P[P.length-1][0]-P[0][0],P[P.length-1][1]-P[0][1]);if(ch<L*0.55)continue; // eingerollte Kringel weg
+        cands.push({sm:P,L,s:L*(c.str||1)});}}
+    cands.sort((a,b)=>b.s-a.s);let nX=0;
+    for(const cd of cands){if(nX>=maxN)break;
+      // erneut gegen schon gewählte Linien prüfen (parallele Doppellinien vermeiden)
+      const pcs=cutCovered({sm:cd.sm,closed:false,score:1},occ,minRun);if(!pcs.length)continue;const P0=pcs.reduce((a,b)=>b.sm.length>a.sm.length?b:a).sm;
+      if(P0.length*1.5<minL)continue;
+      const S=smoothOpen(resample(P0,false,1.5),Math.max(2,0.008*carLen/1.5));
+      const idx=ptIndex(out,1);const a=attach({sm:S,closed:false,extra:true,score:1e6,len:S.length},idx,carLen*0.05,carLen*0.02);
+      if(!a)continue;out.push(a);markOcc([a]);nX++;}
+  }
   // 8) Überstände: offene Linien auf das Stück zwischen erster und letzter Berührung kürzen
   for(const c of out){if(c.closed||c.outline||c.wheel!==undefined||!c.sm)continue;
     const others=ptIndex(out.filter(o=>o!==c),1),P=c.sm,n=P.length;let a=0,b=n-1;
@@ -1903,7 +1924,7 @@ function composeMin(list,mask){
   for(const c of out){if(!c.cub)c.cub=c.closed?fitPath(c.sm,true,eps):fitPath(c.sm,false,Math.max(0.3,eps*0.6));if(!c.p||!c.p.length)c.p=rdp(c.sm||flatten(c.cub,10),0.6);}
   let res=out;
   // Linienhierarchie wie beim Designer: Umriss + Reifen kräftig, Fenster/Radläufe mittel, Details fein (vor dem Verbinden setzen – Breiten zählen)
-  const tierOf=c=>c.outline||c.wheel!==undefined?'A':c.window||c.arch?'B1':c.door?'B':(c.light||c.mirror||c.bridge)?'C':null;
+  const tierOf=c=>c.outline||c.wheel!==undefined?'A':c.window||c.arch?'B1':c.door?'B':(c.light||c.mirror||c.bridge||c.extra)?'C':null;
   for(const c of res){if(c.uid||c.rim)continue;c.tierFix=tierOf(c);}
   if($('connectAll').checked){
     for(let it=0;it<6;it++){const r=rasterize(res),Lb=label(r);if(Lb.n<=1)break;
@@ -2176,7 +2197,7 @@ function run(){
   }
   let r,L,labOf;
   if(useArt){
-    const cm=artLevel==='min'&&useOutline?composeMin(list,mask):null;
+    const cm=useOutline?composeMin(list,mask):null;
     if(cm){list=cm;r=rasterize(list);L=label(r);}else{
     list=artLevel==='min'?cleanTail(list,outl,eps,mask):artTail(list,outl,eps);
     r=rasterize(list);L=label(r);
@@ -2528,7 +2549,7 @@ for(const k in fmt){const el=$(k),o=$(k+'O');const upd=()=>o.textContent=fmt[k](
   el.addEventListener('input',()=>{upd();if(k==='brush')return;
     document.querySelectorAll('[data-preset]').forEach(x=>x.setAttribute('aria-pressed','false'));
     if(k==='res'){clearTimeout(el._t);el._t=setTimeout(()=>{setupRes(false,true);refreshAll();},350);}else if(k==='hi'||k==='lo'||k==='maxLines'||k==='weak')schedule();else schedule();});}
-for(const k of ['largest','autoOn','struct','ground','outlineOn','valleyOn','shadowOn','connectAll','detailLoops','cleanWin','winOne','noAntenna','pWin','pDoor','pArch','pLight','pMirror','pRim'])$(k).addEventListener('change',schedule);
+for(const k of ['largest','autoOn','struct','ground','outlineOn','valleyOn','shadowOn','connectAll','detailLoops','cleanWin','winOne','noAntenna','pWin','pDoor','pArch','pLight','pMirror','pRim','pExtra'])$(k).addEventListener('change',schedule);
 $('aiOn').addEventListener('change',()=>{if(img)loadSrc(img.src,false);});
 $('teedOn').addEventListener('change',()=>{if($('teedOn').checked)refreshAll();else schedule();});
 $('darkBoost').addEventListener('change',()=>refreshAll());
