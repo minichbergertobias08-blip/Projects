@@ -47,11 +47,14 @@ function carWidthOrig(){
   if(seg&&$('aiOn').checked&&seg.bx1>seg.bx0)return (seg.bx1-seg.bx0)*nw;
   return (crop.x1-crop.x0)*nw*0.8;
 }
+window.__T={};const tmark=k=>{window.__T[k]=Math.round(performance.now()-(window.__T0||0));};
 async function startPipeline(im,g,demo){
+  window.__T0=performance.now();window.__T={};
   pipeBusy=true;setMode('result');
   setupRes(true,true);render();
   setProgress(1,'KI stellt das Auto frei …');await nextFrame();
   if($('aiOn').checked){try{await segmentImage(im);}catch(e){}}
+  tmark('seg');
   if(g!==gen)return;
   if(seg&&$('aiOn').checked){
     const nw=im.naturalWidth,nh=im.naturalHeight,cw=seg.bx1-seg.bx0,ch=seg.by1-seg.by0;
@@ -59,11 +62,11 @@ async function startPipeline(im,g,demo){
   }else{crop={x0:0,y0:0,x1:1,y1:1};if(demo&&demoFallback)poly=demoFallback;}
   resetEditsKeepPoly();
   setupRes(true,true);
-  await runTeedStage(g);
+  await runTeedStage(g);tmark('lines');
   if(g!==gen)return;
   setProgress(3,'Zeichnung wird erstellt …');await nextFrame();
   currentMask();await nextFrame(); // in Etappen rechnen, damit die Seite nicht hängt
-  run();fitView();
+  run();tmark('run');fitView();
   pipeBusy=false;setProgress(0);render();
   setTip(finishTip());
 }
@@ -84,10 +87,10 @@ function resetEditsKeepPoly(){const p=poly;resetEdits();poly=p;}
 async function runTeedStage(g){
   if(!$('autoOn').checked){teedE=null;lineE=null;return;}
   setProgress(2,'KI zeichnet die Linien …');await nextFrame();
-  if($('teedOn').checked){try{await runTeed(g);}catch(e){teedE=null;teedState='failed';}}else teedE=null;
+  if($('teedOn').checked&&!$('artOn').checked){try{await runTeed(g);}catch(e){teedE=null;teedState='failed';}}else teedE=null;tmark('teed');
   if(g!==gen)return;
   if($('artOn').checked){try{await runArt(g);}catch(e){console.error(e);lineE=null;artState='failed';}}else lineE=null;
-  if(!teedE&&lineE&&window.ART_AS_TEED){teedE=lineE;teedRectKey='art:'+artKey;}
+  if(!teedE&&lineE){teedE=lineE;teedRectKey='art:'+artKey;} // Linienbild ersetzt die Kantenerkennung (spart ~4 s)
 }
 async function refreshAll(){
   if(!img)return;const g=gen;pipeBusy=true;
@@ -341,31 +344,42 @@ const ORT_BASE='https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
 /*@ASSET ORT_WASM_GZ ort-wasm-simd-threaded.wasm.gz b64*/
 let demoFallback=null,ortSess=null,ortState='idle',seg=null,segFor=null,carMask=null,maskKey='',segBusy=false;
 let ortLock=Promise.resolve();
-function runLocked(sess,feeds){const p=ortLock.then(()=>sess.run(feeds));ortLock=p.catch(()=>{});return p;}
+function runLocked(sess,feeds){if(sess.wk){const p=sess.wk.lock.then(()=>sess.run(feeds));sess.wk.lock=p.catch(()=>{});return p;}const p=ortLock.then(()=>sess.run(feeds));ortLock=p.catch(()=>{});return p;}
 function loadScript(src){return new Promise((res,rej)=>{const s=document.createElement('script');s.src=src;s.onload=res;s.onerror=()=>rej(new Error('load'));document.head.appendChild(s);});}
 /* KI läuft in einem Hintergrund-Prozess (Web Worker) – die Oberfläche bleibt dabei bedienbar */
-let ortWorker=null;
-const ORT_WORKER_SRC=`let S={},n=0;
+let ortWorker=null,ortGPU=false,ortUsed={};
+const ORT_WORKER_SRC=`let S={},n=0,GPU=false;
 self.onmessage=async e=>{const m=e.data;try{
- if(m.t==='init'){(0,eval)(m.ortSrc+';self.ort=ort;');ort.env.wasm.wasmBinary=m.wasm;ort.env.wasm.wasmPaths={mjs:URL.createObjectURL(new Blob([m.mjsSrc],{type:'text/javascript'}))};ort.env.wasm.numThreads=1;postMessage({id:m.id,ok:1});}
- else if(m.t==='create'){const s=await ort.InferenceSession.create(m.bytes,{executionProviders:['wasm'],graphOptimizationLevel:'all'});const k=++n;S[k]=s;postMessage({id:m.id,ok:1,k,inputNames:s.inputNames,outputNames:s.outputNames});}
- else if(m.t==='run'){const s=S[m.k],f={};for(const k in m.feeds){const v=m.feeds[k];f[k]=new ort.Tensor(v.type,v.data,v.dims);}
-  const o=await s.run(f),r={},tr=[];for(const k in o){r[k]={data:o[k].data,dims:o[k].dims};tr.push(o[k].data.buffer);}postMessage({id:m.id,ok:1,out:r},tr);}
+ if(m.t==='init'){(0,eval)(m.ortSrc+';self.ort=ort;');ort.env.wasm.wasmBinary=m.wasm;ort.env.wasm.wasmPaths={mjs:URL.createObjectURL(new Blob([m.mjsSrc],{type:'text/javascript'}))};ort.env.wasm.numThreads=1;
+   if(m.gpu){try{GPU=!!(self.navigator&&navigator.gpu&&await navigator.gpu.requestAdapter({powerPreference:'high-performance'}));}catch(x){GPU=false;}}
+   postMessage({id:m.id,ok:1,gpu:GPU});}
+ else if(m.t==='create'){let s=null,used='wasm';
+   if(GPU&&m.gpu){try{s=await ort.InferenceSession.create(m.bytes.slice(0),{executionProviders:['webgpu','wasm'],graphOptimizationLevel:'all'});used='webgpu';}catch(x){s=null;}}
+   if(!s)s=await ort.InferenceSession.create(m.bytes,{executionProviders:['wasm'],graphOptimizationLevel:'all'});
+   const k=++n;S[k]=s;if(used==='webgpu')S[k].__bytes=m.bytes;postMessage({id:m.id,ok:1,k,used,inputNames:s.inputNames,outputNames:s.outputNames});}
+ else if(m.t==='run'){let s=S[m.k];const f={};for(const k in m.feeds){const v=m.feeds[k];f[k]=new ort.Tensor(v.type,v.data,v.dims);}
+  let o;try{o=await s.run(f);}catch(x){if(!s.__bytes)throw x; // Grafikkarte streikt → auf dem Prozessor weiterrechnen
+    s=S[m.k]=await ort.InferenceSession.create(s.__bytes,{executionProviders:['wasm'],graphOptimizationLevel:'all'});o=await s.run(f);}
+  const r={},tr=[];for(const k in o){r[k]={data:o[k].data,dims:o[k].dims};tr.push(o[k].data.buffer);}postMessage({id:m.id,ok:1,out:r},tr);}
 }catch(err){postMessage({id:m.id,err:String(err&&err.message||err)});}};`;
 async function startOrtWorker(){
-  const w=new Worker(URL.createObjectURL(new Blob([ORT_WORKER_SRC],{type:'text/javascript'})));
-  const q=new Map();let wid=0;
-  w.onmessage=e=>{const m=e.data,p=q.get(m.id);if(!p)return;q.delete(m.id);m.err?p.rej(new Error(m.err)):p.res(m);};
-  w.onerror=e=>{for(const p of q.values())p.rej(new Error('Worker-Fehler'));q.clear();};
-  const call=(msg,tr)=>new Promise((res,rej)=>{const id=++wid;q.set(id,{res,rej});w.postMessage(Object.assign(msg,{id}),tr||[]);});
-  const wasm=await new Response(new Blob([b64u8(ORT_WASM_GZ)]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
-  await call({t:'init',ortSrc:ORT_JS,mjsSrc:ORT_MJS,wasm},[wasm]);
-  // Probelauf, damit ein kaputter Worker sofort auffällt
-  ortWorker=w;
+  const wasm0=await new Response(new Blob([b64u8(ORT_WASM_GZ)]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+  const mk=async()=>{
+    const w=new Worker(URL.createObjectURL(new Blob([ORT_WORKER_SRC],{type:'text/javascript'})));
+    const q=new Map();let wid=0;
+    w.onmessage=e=>{const m=e.data,p=q.get(m.id);if(!p)return;q.delete(m.id);m.err?p.rej(new Error(m.err)):p.res(m);};
+    w.onerror=e=>{for(const p of q.values())p.rej(new Error('Worker-Fehler'));q.clear();};
+    const call=(msg,tr)=>new Promise((res,rej)=>{const id=++wid;q.set(id,{res,rej});w.postMessage(Object.assign(msg,{id}),tr||[]);});
+    const r0=await call({t:'init',ortSrc:ORT_JS,mjsSrc:ORT_MJS,wasm:wasm0.slice(0),gpu:!window.NO_GPU});ortGPU=ortGPU||!!r0.gpu;
+    return {w,call,lock:Promise.resolve()};};
+  // zwei Hintergrund-Prozesse: so laufen Freistellen und Teile-Erkennung gleichzeitig
+  const pool=[await mk()];ortWorker=pool[0].w;
+  let second=null;const getW=i=>{if(i===1){if(!second)second=mk().then(x=>{pool[1]=x;return x;}).catch(()=>pool[0]);return second;}return Promise.resolve(pool[0]);};
   window.ort={Tensor:class{constructor(type,data,dims){this.type=type;this.data=data;this.dims=dims;}},
     env:{wasm:{}},
-    InferenceSession:{create:async bytes=>{const r=await call({t:'create',bytes},[bytes.buffer]);
-      return {inputNames:r.inputNames,outputNames:r.outputNames,run:async feeds=>{const f={};for(const k in feeds){const v=feeds[k];f[k]={type:v.type,data:v.data,dims:v.dims};}return (await call({t:'run',k:r.k,feeds:f})).out;}};}}};
+    InferenceSession:{create:async(bytes,opt)=>{const W2=await getW(opt&&opt.worker||0);const r=await W2.call({t:'create',bytes,gpu:!!(opt&&opt.gpu)},[bytes.buffer]);ortUsed[r.used]=(ortUsed[r.used]||0)+1;
+      const sess={inputNames:r.inputNames,outputNames:r.outputNames,wk:W2,run:async feeds=>{const f={};for(const k in feeds){const v=feeds[k];f[k]={type:v.type,data:v.data,dims:v.dims};}return (await W2.call({t:'run',k:r.k,feeds:f})).out;}};
+      return sess;}}};
 }
 let ortInit=null;
 function ensureOrt(){if(ortSess)return Promise.resolve(ortSess);if(!ortInit)ortInit=ensureOrt0().catch(e=>{ortInit=null;throw e;});return ortInit;}
@@ -448,9 +462,9 @@ async function detectCars(im){
 /* ================= Autoteile-Erkennung (YOLOv8n-seg, Car-Damage-Parts von M. Nisar) – findet v. a. die Räder zuverlässig ================= */
 /*@ASSET CARPARTS carparts.onnx gzb64*/
 const PART_NAMES=['Back-bumper','Back-door','Back-wheel','Back-window','Back-windshield','Broken part','Corrosion','Cracked','Dent','Fender','Flaking','Front-bumper','Front-door','Front-wheel','Front-window','Grille','Headlight','Hood','License-plate','Mirror','Missing part','Paint chip','Quarter-panel','Rocker-panel','Roof','Scratch','Tail-light','Trunk','Windshield'];
-let partsSess=null,carParts=[];
+let partsSess=null,carParts=[],partsWait=null;
 async function detectParts(im){
-  if(!partsSess)partsSess=await ort.InferenceSession.create(await modelBytes(CARPARTS),{executionProviders:['wasm'],graphOptimizationLevel:'all'});
+  if(!partsSess)partsSess=await ort.InferenceSession.create(await modelBytes(CARPARTS),{executionProviders:['wasm'],graphOptimizationLevel:'all',worker:1});
   const nw=im.naturalWidth,nh=im.naturalHeight,S=640,sc=S/Math.max(nw,nh),w=Math.round(nw*sc),h=Math.round(nh*sc);
   const c=document.createElement('canvas');c.width=S;c.height=S;const x=c.getContext('2d',{willReadFrequently:true});
   x.fillStyle='rgb(114,114,114)';x.fillRect(0,0,S,S);x.imageSmoothingQuality='high';x.drawImage(im,0,0,w,h);
@@ -506,9 +520,35 @@ function partShape(p,o){
   pts=tubeFair(pts,true,Math.max(1.5,(o.T||1.1)*lw()),Math.max(6,(o.S||26)*SC));
   return pts;
 }
+/* Fensterkontur „wie gezeichnet“: Maske an die KI-Linien anlegen, dann zu einem Vieleck mit leicht gerundeten Ecken vereinfachen */
+function crispWindow(p){
+  const carLen=carBoxPx?carBoxPx.x1-carBoxPx.x0:W*0.8,nw=img.naturalWidth,nh=img.naturalHeight,ax=(crop.x1-crop.x0)*nw/W,ay=(crop.y1-crop.y0)*nh/H;
+  const pad=Math.round(0.02*carLen);
+  const X0=Math.max(0,Math.floor((p.x0-crop.x0*nw)/ax)-pad),X1=Math.min(W-1,Math.ceil((p.x1-crop.x0*nw)/ax)+pad),Y0=Math.max(0,Math.floor((p.y0-crop.y0*nh)/ay)-pad),Y1=Math.min(H-1,Math.ceil((p.y1-crop.y0*nh)/ay)+pad);
+  const w=X1-X0+1,h=Y1-Y0+1;if(w<12||h<12)return null;
+  const n=w*h,P=new Float32Array(n),Ir=new Float32Array(n),Ig=new Float32Array(n),Ib=new Float32Array(n),k=p.msc,MW=p.mw,M=p.mask;
+  for(let y=0;y<h;y++){const my=(crop.y0*nh+(y+Y0)*ay)*k-0.5;for(let x=0;x<w;x++){const i=y*w+x,g=(y+Y0)*W+x+X0;Ir[i]=R[g]/255;Ig[i]=G[g]/255;Ib[i]=B[g]/255;
+    const mx=(crop.x0*nw+(x+X0)*ax)*k-0.5,ix=Math.max(0,Math.min(MW-2,Math.floor(mx))),iy=Math.max(0,Math.min(MW-2,Math.floor(my))),fx=Math.min(1,Math.max(0,mx-ix)),fy=Math.min(1,Math.max(0,my-iy));
+    const v=(M[iy*MW+ix]*(1-fx)+M[iy*MW+ix+1]*fx)*(1-fy)+(M[(iy+1)*MW+ix]*(1-fx)+M[(iy+1)*MW+ix+1]*fx)*fy;
+    const gx=crop.x0*nw+(x+X0)*ax,gy=crop.y0*nh+(y+Y0)*ay,inb=gx>=p.x0&&gx<=p.x1&&gy>=p.y0&&gy<=p.y1;
+    P[i]=inb?1/(1+Math.exp(-v)):0;}}
+  // Guided Filter: die weiche Maske an die Farbkanten des Fotos ziehen (scharfe Ecken wie am echten Fenster)
+  const q=guidedColor(Ir,Ig,Ib,P,w,h,Math.max(2,Math.round(0.004*carLen)),1e-3);
+  const sub=new Uint8Array(n);let cnt=0;for(let i=0;i<n;i++)if(q[i]>0.5){sub[i]=1;cnt++;}
+  if(cnt<(0.03*carLen)**2)return null;
+  const loops=traceContours(sub,w,h);if(!loops.length)return null;
+  let best=loops[0],ba=0;for(const l of loops){const aa=Math.abs(polyArea(l));if(aa>ba){ba=aa;best=l;}}
+  let pts=resample(best.map(q2=>[q2[0]+X0,q2[1]+Y0]),true,1.5);
+  pts=gsmooth(pts,Math.max(1.2,1.5*SC),true);
+  let poly=simplifyLoop(pts,Math.max(1.5,0.004*carLen)); // gerade Kanten, echte Ecken
+  if(poly.length<3)return null;
+  // nur minimal runden
+  const q3=[];for(let i=0;i<poly.length;i++){const a2=poly[i],b2=poly[(i+1)%poly.length];q3.push([a2[0]*0.9+b2[0]*0.1,a2[1]*0.9+b2[1]*0.1],[a2[0]*0.1+b2[0]*0.9,a2[1]*0.1+b2[1]*0.9]);}
+  return resample(q3,true,1.5);
+}
 function windowItems(){
   if(!carParts||!img||!lineE)return [];const out=[];
-  for(const p of carParts){if(!p.mask||p.s<0.25||!GLASS.test(p.k))continue;const pts=partShape(p,{hull:true});if(!pts)continue;
+  for(const p of carParts){if(!p.mask||p.s<0.25||!GLASS.test(p.k))continue;const pts=crispWindow(p);if(!pts)continue;
     {let per=0;for(let i=0;i<pts.length;i++){const a=pts[i],b=pts[(i+1)%pts.length];per+=Math.hypot(a[0]-b[0],a[1]-b[1]);}
      const th=2*Math.abs(polyArea(pts))/Math.max(1,per),carLen=carBoxPx?carBoxPx.x1-carBoxPx.x0:W*0.8;if(th<carLen*0.012)continue;} // schmaler Streifen (Frontscheibe von der Seite) → weglassen
     out.push({sm:pts,p:rdp(pts,0.6),closed:true,len:pts.length,str:2,score:1e7,user:false,protect:true,window:!/shield/i.test(p.k),shield:/shield/i.test(p.k)});}
@@ -537,13 +577,13 @@ function wheelsFromParts(){
   if(d<0.35*L)return [];
   return out;
 }
-async function segmentImage(im){
+async function segmentImage(im){tmark('seg0');
   segFor=im;seg=null;maskKey='';segBusy=true;aiStatus();
   try{
     await ensureOrt();
     const nw=im.naturalWidth,nh=im.naturalHeight;
     let cars=[];try{cars=await detectCars(im);}catch(e){cars=[];}
-    try{carParts=await detectParts(im);}catch(e){console.error(e);carParts=[];}
+    tmark('cars');const partsP=detectParts(im).then(r=>{carParts=r;tmark('parts');},e=>{console.error(e);carParts=[];});partsWait=partsP;
     if(segFor!==im)return;
     let x0,x1,y0,y1,car=null,bb=null,comps=[];
     if(!cars.length){ // ohne Auto-Erkennung: erst grob im ganzen Bild freistellen
@@ -578,7 +618,7 @@ async function segmentImage(im){
     const sx=(x1-x0)/320/nw,sy=(y1-y0)/320/nh;
     seg={p:p1,x0:x0/nw,y0:y0/nh,x1:x1/nw,y1:y1/nh,bx0:x0/nw+b2.x0*sx,bx1:x0/nw+(b2.x1+1)*sx,by0:y0/nh+b2.y0*sy,by1:y0/nh+(b2.y1+1)*sy};
   }catch(e){seg=null;}
-  finally{if(segFor===im){segBusy=false;aiStatus();wheelKey='';}}
+  finally{if(partsWait){try{await partsWait;}catch(e){}partsWait=null;}if(segFor===im){segBusy=false;aiStatus();wheelKey='';}}
 }
 /* ================= KI-Linien: TEED (MIT, Soria et al. 2023) ================= */
 /*@ASSET TEEDM teed.onnx gzb64*/
