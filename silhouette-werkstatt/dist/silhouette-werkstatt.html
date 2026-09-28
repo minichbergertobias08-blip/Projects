@@ -2169,7 +2169,7 @@ function composeMin(list,mask){
     const f=fillMask(winOut,lwv*2);
     for(const pts of glassFaces){const hu=convexHull(pts),ha=Math.abs(polyArea(hu)),a=Math.abs(polyArea(pts));if(!(ha>0&&a/ha>0.85)||a<amin*0.35)continue;
       let o=0,cy=0;for(const q of pts){if(mAt(f,q))o++;cy+=q[1];}cy/=pts.length;if(o>pts.length*0.1||cy<y0||cy>y1)continue;
-      const P=clipClosedTo(roundPoly(simplifyLoop(resample(pts,true,1.5),Math.max(1.5,0.006*carLen))),winAllow,carLen);if(!P)continue;
+      const P=clipClosedTo(roundPoly(simplifyLoop(resample(hu,true,1.5),Math.max(1.5,0.006*carLen))),winAllow,carLen);if(!P)continue;
       winOut.push({sm:P,p:rdp(P,0.6),closed:true,len:P.length,window:true,protect:true,score:1e7});break;}}
   out.push(...winOut);anchors=anchors.concat(winOut);
   const winF=winOut.length?fillMask(winOut,lwv*1.4):null;
