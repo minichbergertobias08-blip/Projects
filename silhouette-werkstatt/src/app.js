@@ -8,7 +8,7 @@ let img=null,W=0,H=0,R,G,B,grad=null,magN=null,gdx=null,gdy=null,support=null,gr
 let fin=null,bbox=null,parts=0,vec=[],vecPath=new Path2D(),autoItems=[];
 let poly=[],draft=null,mode='result',tool='hand',undoStack=[],hover=null,lineStart=null,lastPt=null,stroking=false;
 let userLines=[],trace=null,editDrag=null,editHover=null,delHover=null,uidSeq=1,shiftDown=false,spaceDown=false;
-let wheelConf='',wheels=[],wheelKey='',wheelsManual=false,wheelMode='arc';
+let wheelConf='',wheels=[],wheelKey='',wheelsManual=false,wheelMode='circle';
 let zv={z:1,tx:0,ty:0},panning=null;
 let WIGK=20000,SC=1,carBoxPx=null,crop={x0:0,y0:0,x1:1,y1:1},photoC=document.createElement('canvas'),gen=0,pipeBusy=false;
 let teedGamma=1,teedSess=null,teedE=null,teedState='idle',teedRectKey='';
@@ -65,6 +65,7 @@ async function startPipeline(im,g,demo){
   await runTeedStage(g);tmark('lines');
   if(g!==gen)return;
   setProgress(3,'Zeichnung wird erstellt …');await nextFrame();
+  if(partsFlipWait){try{await partsFlipWait;}catch(e){}partsFlipWait=null;if(g!==gen)return;}
   currentMask();tmark('mask');await nextFrame(); // in Etappen rechnen, damit die Seite nicht hängt
   try{windowItems();}catch(e){}await nextFrame();
   run();tmark('run');fitView();
@@ -466,11 +467,19 @@ async function detectCars(im){
 /*@ASSET CARPARTS carparts.onnx gzb64*/
 const PART_NAMES=['Back-bumper','Back-door','Back-wheel','Back-window','Back-windshield','Broken part','Corrosion','Cracked','Dent','Fender','Flaking','Front-bumper','Front-door','Front-wheel','Front-window','Grille','Headlight','Hood','License-plate','Mirror','Missing part','Paint chip','Quarter-panel','Rocker-panel','Roof','Scratch','Tail-light','Trunk','Windshield'];
 let partsSess=null,carParts=[],partsWait=null;
-async function detectParts(im){
+/* zweiter Durchgang mit gespiegeltem Foto: findet oft Scheiben/Türen, die im ersten fehlen – Ergebnisse werden zusammengeführt */
+let partsFlipWait=null;
+function mergeParts(a,b){
+  const iou=(p,q)=>{const ix=Math.max(0,Math.min(p.x1,q.x1)-Math.max(p.x0,q.x0)),iy=Math.max(0,Math.min(p.y1,q.y1)-Math.max(p.y0,q.y0)),I=ix*iy;return I/((p.x1-p.x0)*(p.y1-p.y0)+(q.x1-q.x0)*(q.y1-q.y0)-I);};
+  const out=a.slice();for(const q of b){const i=out.findIndex(p=>p.k===q.k&&iou(p,q)>0.4);if(i<0)out.push(q);else if(q.s>out[i].s+0.15)out[i]=q;}
+  return out.sort((p,q)=>q.s-p.s);
+}
+async function detectParts(im,flip){
   if(!partsSess)partsSess=await ort.InferenceSession.create(await modelBytes(CARPARTS),{executionProviders:['wasm'],graphOptimizationLevel:'all',worker:1});
   const nw=im.naturalWidth,nh=im.naturalHeight,S=640,sc=S/Math.max(nw,nh),w=Math.round(nw*sc),h=Math.round(nh*sc);
   const c=document.createElement('canvas');c.width=S;c.height=S;const x=c.getContext('2d',{willReadFrequently:true});
-  x.fillStyle='rgb(114,114,114)';x.fillRect(0,0,S,S);x.imageSmoothingQuality='high';x.drawImage(im,0,0,w,h);
+  x.fillStyle='rgb(114,114,114)';x.fillRect(0,0,S,S);x.imageSmoothingQuality='high';
+  if(flip){x.save();x.translate(w,0);x.scale(-1,1);x.drawImage(im,0,0,w,h);x.restore();}else x.drawImage(im,0,0,w,h);
   const d=x.getImageData(0,0,S,S).data,n=S*S,f=new Float32Array(3*n);
   for(let i=0;i<n;i++){f[i]=d[i*4]/255;f[n+i]=d[i*4+1]/255;f[2*n+i]=d[i*4+2]/255;}
   const out=await runLocked(partsSess,{[partsSess.inputNames[0]]:new ort.Tensor('float32',f,[1,3,S,S])});
@@ -487,6 +496,9 @@ async function detectParts(im){
     for(const k2 of keep){if(!/window|windshield|mirror|light|door/i.test(k2.k))continue;const m=new Float32Array(PM);
       for(let q=0;q<32;q++){const cf=a[(4+NC+q)*D+k2.j];if(!cf)continue;for(let i=0;i<PM;i++)m[i]+=cf*P[q*PM+i];}
       k2.mask=m;k2.mw=PW;k2.msc=sc*PW/S;}}
+  if(flip){const PH=pr?pr.dims[2]:0;for(const k2 of keep){const x0=nw-k2.x1,x1=nw-k2.x0;k2.x0=x0;k2.x1=x1;
+      if(k2.mask){const PW=k2.mw,m=k2.mask,o=new Float32Array(m.length),wf=w*PW/S;
+        for(let yy=0;yy<PH;yy++)for(let xx=0;xx<PW;xx++){const xf=Math.round(wf-(xx+0.5)-0.5);o[yy*PW+xx]=xf>=0&&xf<PW?m[yy*PW+xf]:-10;}k2.mask=o;}}}
   return keep;
 }
 /* Räder aus der Teile-Erkennung: zwei runde Rad-Boxen → Kreise, dann Radius/Mitte an den Kanten nachjustieren */
@@ -611,7 +623,8 @@ async function segmentImage(im){tmark('seg0');
     await ensureOrt();
     const nw=im.naturalWidth,nh=im.naturalHeight;
     let cars=[];try{cars=await detectCars(im);}catch(e){cars=[];}
-    tmark('cars');const partsP=detectParts(im).then(r=>{carParts=r;tmark('parts');},e=>{console.error(e);carParts=[];});partsWait=partsP;
+    tmark('cars');const partsP=detectParts(im).then(r=>{carParts=r;tmark('parts');
+      partsFlipWait=detectParts(im,true).then(r2=>{if(segFor===im&&carParts===r){carParts=mergeParts(r,r2);winCache={k:null,v:null};wheelKey='';}tmark('parts2');},e=>console.error(e));},e=>{console.error(e);carParts=[];});partsWait=partsP;
     if(segFor!==im)return;
     let x0,x1,y0,y1,car=null,bb=null,comps=[];
     if(!cars.length){ // ohne Auto-Erkennung: erst grob im ganzen Bild freistellen
@@ -1819,7 +1832,7 @@ function composeMin(list,mask){
   const clipOpen=(pts,m,tag)=>{const keep=pts.map(q=>mAt(inside,q)&&!(m&&mAt(m,q)));return runsOf(pts,keep,true).filter(r=>r.closed||r.pts.length>=minRun).map(r=>Object.assign({sm:r.pts,closed:r.closed,len:r.pts.length},tag));};
   const shapes=[];
   for(const p of carParts||[]){if(!p.mask)continue;
-    if(p.k==='Mirror'&&p.s>0.35){const pts=partShape(p,{minA:0.012*carLen,S:16,T:1.1,snapF:0.004,hull:true});if(pts)shapes.push(...clipOpen(pts,winF,{mirror:true,score:5e6}));}
+    if(p.k==='Mirror'&&p.s>0.35){const pts=partShape(p,{minA:0.012*carLen,S:16,T:1.1,snapF:0.004,hull:true});if(pts)shapes.push(...clipOpen(pts,null,{mirror:true,score:5e6}));}
     else if(/light/i.test(p.k)&&p.s>0.25){const pts=partShape(p,{minA:0.012*carLen,S:22,T:1.4,snapF:0.004,hull:true});if(pts){const pl=simplifyLoop(pts,Math.max(1.5,0.005*carLen));const P2=pl.length>=4?roundPoly(pl):pts;shapes.push(...clipOpen(P2,winF,{light:true,score:4e6}));}}}
   {const ws=WH.slice().sort((a,b)=>a.cx-b.cx);let wbt=-1;for(const w of winOut)for(const q of w.sm)wbt=Math.max(wbt,q[1]);
     for(let i=shapes.length-1;i>=0;i--){const sh=shapes[i];let cx=0,cy=0;for(const q of sh.sm){cx+=q[0];cy+=q[1];}cx/=sh.sm.length;cy/=sh.sm.length;
@@ -1863,6 +1876,10 @@ function composeMin(list,mask){
   const shapeOut=[];
   {const idx=ptIndex(anchors,1);for(const s of shapes){if(s.closed){shapeOut.push(s);continue;}const a=attach(s,idx,lwv*4,lwv*3);if(a)shapeOut.push(a);}}
   out.push(...shapeOut);anchors=anchors.concat(shapeOut);
+  // Spiegel sitzt VOR der Scheibe: Fensterlinie endet am Spiegel (statt Knubbel an der Fensterecke)
+  {const mir=shapeOut.filter(s=>s.mirror&&s.closed);if(mir.length&&winOut.length){const mf=fillMask(mir,0),neu=[];
+    for(const w of winOut){const pcs=cutCovered(w,mf,minRun);if(pcs.length===1&&pcs[0]===w){neu.push(w);continue;}for(const pc of pcs)neu.push(Object.assign(pc,{window:true,closed:false,cub:null}));}
+    const set=new Set(winOut);for(let i=out.length-1;i>=0;i--)if(set.has(out[i]))out.splice(i,1);anchors=anchors.filter(a=>!set.has(a));out.push(...neu);anchors=anchors.concat(neu);}}
   const doorOut=[];
   // Türfugen als ruhige, leicht gebogene Linien (x = a + b·y + c·y²), keine Zitterlinie
   const fairDoor=P=>{let y0=1e9,y1=-1e9;for(const q of P){y0=Math.min(y0,q[1]);y1=Math.max(y1,q[1]);}const ym=(y0+y1)/2,sy=Math.max(1,(y1-y0)/2);
@@ -1885,6 +1902,9 @@ function composeMin(list,mask){
   // 9) zusammenhängend machen: lose Teile mit kurzem Steg an den Rest
   for(const c of out){if(!c.cub)c.cub=c.closed?fitPath(c.sm,true,eps):fitPath(c.sm,false,Math.max(0.3,eps*0.6));if(!c.p||!c.p.length)c.p=rdp(c.sm||flatten(c.cub,10),0.6);}
   let res=out;
+  // Linienhierarchie wie beim Designer: Umriss + Reifen kräftig, Fenster/Radläufe mittel, Details fein (vor dem Verbinden setzen – Breiten zählen)
+  const tierOf=c=>c.outline||c.wheel!==undefined?'A':c.window||c.arch?'B1':c.door?'B':(c.light||c.mirror||c.bridge)?'C':null;
+  for(const c of res){if(c.uid||c.rim)continue;c.tierFix=tierOf(c);}
   if($('connectAll').checked){
     for(let it=0;it<6;it++){const r=rasterize(res),Lb=label(r);if(Lb.n<=1)break;
       let main=1;for(let k=2;k<=Lb.n;k++)if(Lb.sizes[k]>Lb.sizes[main])main=k;
@@ -1895,13 +1915,12 @@ function composeMin(list,mask){
       for(const [,idxs] of groups){let best=null;
         for(const i of idxs){const c=res[i];for(const q of resample(c.sm||c.p,!!c.closed,2)){const h=mainIdx.near(q,best?best.d:carLen*0.2);if(h&&(!best||h.d<best.d))best={d:h.d,a:q,b:h.p};}}
         const prot=idxs.some(i=>res[i].window||res[i].light||res[i].mirror||res[i].wheel!==undefined||res[i].outline);
-        if(best&&(prot||best.d<carLen*0.05)){const p=[best.a,best.b];add.push({sm:p,p,cub:[[best.a,[best.a[0]+(best.b[0]-best.a[0])/3,best.a[1]+(best.b[1]-best.a[1])/3],[best.a[0]+2*(best.b[0]-best.a[0])/3,best.a[1]+2*(best.b[1]-best.a[1])/3],best.b]],closed:false,bridge:true,score:0,len:best.d});}
+        if(best&&(prot||best.d<carLen*0.05)){const p=[best.a,best.b];add.push({sm:p,p,cub:[[best.a,[best.a[0]+(best.b[0]-best.a[0])/3,best.a[1]+(best.b[1]-best.a[1])/3],[best.a[0]+2*(best.b[0]-best.a[0])/3,best.a[1]+2*(best.b[1]-best.a[1])/3],best.b]],closed:false,bridge:true,score:0,len:best.d,tierFix:'C'});}
         else for(const i of idxs)drop.add(i);}
       if(!add.length&&!drop.size)break;res=res.filter((c,i)=>!drop.has(i)).concat(add);}
   }
   res=res.concat(userItems()).concat(groundItem(res));
-  // Linienhierarchie wie beim Designer: Umriss + Reifen kräftig, Fenster/Radläufe mittel, Details fein
-  for(const c of res){if(c.uid||c.rim)continue;c.tierFix=c.outline||c.wheel!==undefined?'A':c.window||c.arch?'B1':c.door?'B':(c.light||c.mirror||c.bridge)?'C':null;}
+  for(const c of res){if(c.uid||c.rim)continue;c.tierFix=tierOf(c);}
   for(const c of res)delete c.sm;
   return res;
 }
