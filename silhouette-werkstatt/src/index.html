@@ -265,7 +265,27 @@ button.big svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width
       </details>
 
       <details open>
-        <summary><b>3</b>Räder &amp; Boden</summary>
+        <summary><b>3</b>Was soll drauf? (Stil Minimal)</summary>
+        <div class="body">
+          <p class="hint">Häkchen weg = Bauteil verschwindet sofort. Einzelne Linien: Werkzeug <b>D</b> und Linie anklicken. Fehlende Linie: <b>N</b> (Punkte setzen) oder <b>G</b> (Gerade).</p>
+          <label class="check"><input type="checkbox" id="pWin" checked> Fenster</label>
+          <label class="check"><input type="checkbox" id="winOne" checked> &nbsp;&nbsp;↳ als eine Linie (ohne Säulen dazwischen)</label>
+          <label class="check"><input type="checkbox" id="pDoor" checked> Türlinien</label>
+          <label class="check"><input type="checkbox" id="pArch" checked> Radläufe (Kotflügel-Bogen)</label>
+          <label class="check"><input type="checkbox" id="pLight" checked> Lichter</label>
+          <label class="check"><input type="checkbox" id="pMirror" checked> Spiegel</label>
+          <label class="check"><input type="checkbox" id="noAntenna" checked> Antenne / Höcker auf dem Dach weglassen</label>
+          <div class="ctl"><label for="archGap">Radlauf-Abstand zum Reifen</label><output id="archGapO"></output>
+            <input type="range" id="archGap" min="0" max="30" step="1" value="0"></div>
+          <div class="ctl"><label for="winGap">Fenster-Abstand zum Dach</label><output id="winGapO"></output>
+            <input type="range" id="winGap" min="2" max="30" step="1" value="9"></div>
+          <div class="ctl"><label for="maxDoors">Anzahl Türlinien (max.)</label><output id="maxDoorsO"></output>
+            <input type="range" id="maxDoors" min="0" max="4" step="1" value="3"></div>
+        </div>
+      </details>
+
+      <details open>
+        <summary><b>4</b>Räder &amp; Boden</summary>
         <div class="body">
           <div class="seg full" role="group" aria-label="Räder">
             <button data-wheel="orig" aria-pressed="false">Foto</button>
@@ -281,7 +301,7 @@ button.big svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width
       </details>
 
       <details open>
-        <summary><b>4</b>Linienstil</summary>
+        <summary><b>5</b>Linienstil</summary>
         <div class="body">
           <div class="ctl"><label for="thick">Linienstärke</label><output id="thickO"></output>
             <input type="range" id="thick" min="0.5" max="14" step="0.5" value="5"></div>
@@ -313,7 +333,7 @@ button.big svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width
       </details>
 
       <details open>
-        <summary><b>5</b>Speichern &amp; Export</summary>
+        <summary><b>6</b>Speichern &amp; Export</summary>
         <div class="body">
           <h3>Speicherort (NAS)</h3>
           <p class="saveinfo" id="saveInfo"></p>

@@ -265,7 +265,27 @@ button.big svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width
       </details>
 
       <details open>
-        <summary><b>3</b>Räder &amp; Boden</summary>
+        <summary><b>3</b>Was soll drauf? (Stil Minimal)</summary>
+        <div class="body">
+          <p class="hint">Häkchen weg = Bauteil verschwindet sofort. Einzelne Linien: Werkzeug <b>D</b> und Linie anklicken. Fehlende Linie: <b>N</b> (Punkte setzen) oder <b>G</b> (Gerade).</p>
+          <label class="check"><input type="checkbox" id="pWin" checked> Fenster</label>
+          <label class="check"><input type="checkbox" id="winOne" checked> &nbsp;&nbsp;↳ als eine Linie (ohne Säulen dazwischen)</label>
+          <label class="check"><input type="checkbox" id="pDoor" checked> Türlinien</label>
+          <label class="check"><input type="checkbox" id="pArch" checked> Radläufe (Kotflügel-Bogen)</label>
+          <label class="check"><input type="checkbox" id="pLight" checked> Lichter</label>
+          <label class="check"><input type="checkbox" id="pMirror" checked> Spiegel</label>
+          <label class="check"><input type="checkbox" id="noAntenna" checked> Antenne / Höcker auf dem Dach weglassen</label>
+          <div class="ctl"><label for="archGap">Radlauf-Abstand zum Reifen</label><output id="archGapO"></output>
+            <input type="range" id="archGap" min="0" max="30" step="1" value="0"></div>
+          <div class="ctl"><label for="winGap">Fenster-Abstand zum Dach</label><output id="winGapO"></output>
+            <input type="range" id="winGap" min="2" max="30" step="1" value="9"></div>
+          <div class="ctl"><label for="maxDoors">Anzahl Türlinien (max.)</label><output id="maxDoorsO"></output>
+            <input type="range" id="maxDoors" min="0" max="4" step="1" value="3"></div>
+        </div>
+      </details>
+
+      <details open>
+        <summary><b>4</b>Räder &amp; Boden</summary>
         <div class="body">
           <div class="seg full" role="group" aria-label="Räder">
             <button data-wheel="orig" aria-pressed="false">Foto</button>
@@ -281,7 +301,7 @@ button.big svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width
       </details>
 
       <details open>
-        <summary><b>4</b>Linienstil</summary>
+        <summary><b>5</b>Linienstil</summary>
         <div class="body">
           <div class="ctl"><label for="thick">Linienstärke</label><output id="thickO"></output>
             <input type="range" id="thick" min="0.5" max="14" step="0.5" value="5"></div>
@@ -313,7 +333,7 @@ button.big svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width
       </details>
 
       <details open>
-        <summary><b>5</b>Speichern &amp; Export</summary>
+        <summary><b>6</b>Speichern &amp; Export</summary>
         <div class="body">
           <h3>Speicherort (NAS)</h3>
           <p class="saveinfo" id="saveInfo"></p>
@@ -1252,8 +1272,19 @@ function removeTongues(pts){
 /* Außenkontur aus der Maske, ohne die Reifen */
 function openMask(m,r){ // Öffnen: dünne Auswüchse (Antenne, Dachträger-Spitzen) verschwinden, Form bleibt
   if(r<1)return m;const d=boxCountOp(erodeMask(m,r),r,false);for(let i=0;i<d.length;i++)if(!m[i])d[i]=0;return d;}
+function roofClean(m){ // Dachantenne / Haifischflosse / kleine Höcker auf dem Dach wegglätten
+  const bb=maskBox(m);if(!bb)return m;const L=bb.x1-bb.x0,Hc=bb.y1-bb.y0,top=new Float32Array(W).fill(-1);
+  for(let x=bb.x0;x<=bb.x1;x++)for(let y=bb.y0;y<=bb.y1;y++)if(m[y*W+x]){top[x]=y;break;}
+  const win=Math.max(5,Math.round(0.06*L)),base=new Float32Array(W).fill(-1);
+  // Grundlinie: pro Fenster das 70%-Quantil der Oberkante (Höcker liegen darüber = kleinere y)
+  for(let x=bb.x0;x<=bb.x1;x++){const v=[];for(let k=Math.max(bb.x0,x-win);k<=Math.min(bb.x1,x+win);k++)if(top[k]>=0)v.push(top[k]);v.sort((a,b)=>a-b);base[x]=v[Math.floor(v.length*0.7)];}
+  const o=m.slice(),thr=Math.max(2,0.004*L);let changed=0;
+  for(let x=bb.x0+Math.round(L*0.08);x<=bb.x1-Math.round(L*0.08);x++){if(top[x]<0||top[x]>bb.y0+Hc*0.3)continue;
+    if(top[x]<base[x]-thr){for(let y=top[x];y<base[x];y++)o[y*W+x]=0;changed++;}}
+  return changed&&changed<L*0.15?o:m;
+}
 function outlineItems(m,er){
-  {const bb0=maskBox(m);if(bb0&&artLevel==='min')m=openMask(m,Math.max(2,0.005*(bb0.x1-bb0.x0)));}
+  {const bb0=maskBox(m);if(bb0&&artLevel==='min'){m=openMask(m,Math.max(2,0.005*(bb0.x1-bb0.x0)));if($('noAntenna').checked)m=roofClean(m);}}
   const bb=maskBox(m);if(!bb)return [];
   const x0=Math.max(0,bb.x0-2),y0=Math.max(0,bb.y0-2),w=Math.min(W,bb.x1+3)-x0,h=Math.min(H,bb.y1+3)-y0,sub=new Uint8Array(w*h);
   for(let y=0;y<h;y++)for(let x=0;x<w;x++)sub[y*w+x]=m[(y+y0)*W+x+x0];
@@ -1971,7 +2002,7 @@ function cleanTail(list,outl,eps,mask){
   const lwv=lw(),carLen=carBoxPx?carBoxPx.x1-carBoxPx.x0:W*0.8,carH=carBoxPx?carBoxPx.y1-carBoxPx.y0:H*0.5,minRun=Math.max(8,carLen*0.02);
   const fixed=userItems().concat(wheelItems());
   const erM=maskFrom(eraseC,0),erased=c=>{const P=c.sm||c.p;if(!P||!P.length)return false;let k=0;for(const q of P)if(mAt(erM,q))k++;return k>P.length*0.5;};
-  let wins=windowItems().filter(c=>!erased(c));const side=wins.filter(w=>w.window);if(side.length)wins=side;
+  let wins=$('pWin').checked?windowItems().filter(c=>!erased(c)):[];const side=wins.filter(w=>w.window);if(side.length)wins=side;
   if(!wins.length&&!glassFaces)glassFaces=glassFacesFn();
   if(!wins.length)wins=glassFaces.map(pts=>({sm:pts,p:rdp(pts,0.6),closed:true,len:pts.length,score:1e7,window:true,protect:true})).filter(c=>!erased(c)); // Front-/Heckscheibe von der Seite = schmaler Streifen → weglassen
   const mirr=[],lights=[];
@@ -2100,7 +2131,7 @@ function composeMin(list,mask){
   const inside=erodeMask(bodyF,Math.max(1,lwv*0.6)),E=i=>lineE?lineE[i]:0;
   // 2) Radläufe: Radius aus der KI-Zeichnung (Bogen über dem Rad), sonst 1,12 × Reifen
   const bl=bodyLoop,nB=bl.length,cutB=new Uint8Array(nB),archDef=[];
-  for(const [wi,w] of WH.entries()){
+  for(const [wi,w] of WH.entries()){if(!$('pArch').checked)break;
     let bestR=0,bs=0;
     for(let R=Math.max(w.r*1.1,w.r+lwv*3.2);R<=w.r*1.4;R+=Math.max(1,w.r*0.01)){let s=0,n=0;
       for(let a=-150;a<=-30;a+=3){const an=a*Math.PI/180,x=w.cx+Math.cos(an)*R,y=w.cy+Math.sin(an)*R;if(!mAt(inside,[x,y]))continue;n++;let bv=0;
@@ -2108,6 +2139,7 @@ function composeMin(list,mask){
         if(bv>35)s++;}
       if(n>=20){const sc=s/41-0.15*(R/w.r-1);if(sc>bs){bs=sc;bestR=R;}}}
     let R=bs>=0.4?bestR:Math.max(w.r*1.12,w.r+lwv*3.5),done=false;
+    if(+$('archGap').value>0)R=Math.max(w.r+lwv*2.6,w.r*(1+$('archGap').value/100));
     for(let tries=0;tries<12&&!done&&R>w.r+lwv*2.5;tries++,R-=w.r*0.02){
       // Stück des Umrisses innerhalb des Radlauf-Kreises, das um die Reifenunterseite läuft
       const inC=bl.map(q=>Math.hypot(q[0]-w.cx,q[1]-w.cy)<R);let lo=-1,ly=-1e9;
@@ -2153,10 +2185,10 @@ function composeMin(list,mask){
     arches.push({sm:P,p:rdp(P,0.6),cub:[[t0,t0,a.L0,a.L0]].concat(cub.map((b,i)=>i===0?[a.L0,b[1],b[2],b[3]]:i===cub.length-1?[b[0],b[1],b[2],a.L1]:b),[[a.L1,a.L1,t1,t1]]),closed:false,arch:true,score:2e6,len:P.length,protect:true});}
   out.push(...arches);let anchors=out.slice();
   // 4) Fenster (Teile-Erkennung; sonst große geschlossene Flächen der KI-Zeichnung)
-  const gap=Math.max(lwv*1.6,0.009*carLen),winAllow=erodeMask(bodyF,gap);
+  const gap=Math.max(lwv*1.6,$('winGap').value/1000*carLen),winAllow=erodeMask(bodyF,gap);
   let wins=windowItems().filter(c=>!erased(c));const side=wins.filter(w=>w.window);if(side.length)wins=side;
-  if(!wins.length&&!glassFaces)glassFaces=glassFacesFn();
-  if(!wins.length)wins=glassFaces.filter(pts=>{const hu=convexHull(pts),ha=Math.abs(polyArea(hu));return ha>0&&Math.abs(polyArea(pts))/ha>0.8;})
+  if($('pWin').checked&&!wins.length&&!glassFaces)glassFaces=glassFacesFn();
+  if($('pWin').checked&&!wins.length)wins=glassFaces.filter(pts=>{const hu=convexHull(pts),ha=Math.abs(polyArea(hu));return ha>0&&Math.abs(polyArea(pts))/ha>0.8;})
     .sort((a,b)=>Math.abs(polyArea(b))-Math.abs(polyArea(a))).slice(0,2).map(pts=>({sm:roundPoly(simplifyLoop(resample(convexHull(pts),true,1.5),Math.max(1.5,0.006*carLen))),closed:true,window:true,protect:true,score:1e7})).filter(c=>!erased(c));
   const winOut=[];
   for(const w of wins){const P=clipClosedTo(w.sm,winAllow,carLen);if(!P)continue;
@@ -2171,6 +2203,14 @@ function composeMin(list,mask){
       let o=0,cy=0;for(const q of pts){if(mAt(f,q))o++;cy+=q[1];}cy/=pts.length;if(o>pts.length*0.1||cy<y0||cy>y1)continue;
       const P=clipClosedTo(roundPoly(simplifyLoop(resample(hu,true,1.5),Math.max(1.5,0.006*carLen))),winAllow,carLen);if(!P)continue;
       winOut.push({sm:P,p:rdp(P,0.6),closed:true,len:P.length,window:true,protect:true,score:1e7});break;}}
+  // alle Seitenscheiben zu EINER Fensterlinie (Glasfläche mit Säulen dazwischen) zusammenfassen
+  if(winOut.length>1&&$('winOne').checked){const f=fillMask(winOut,0),rc=Math.max(3,Math.round(0.035*carLen));
+    const cl=erodeMask(boxCountOp(f,rc,false),rc);for(let i=0;i<cl.length;i++)if(!winAllow[i])cl[i]=0;
+    const bb=maskBox(cl);if(bb){const w=bb.x1-bb.x0+1,h=bb.y1-bb.y0+1,sub=new Uint8Array(w*h);for(let y=0;y<h;y++)for(let x=0;x<w;x++)sub[y*w+x]=cl[(y+bb.y0)*W+x+bb.x0];
+      const loops=traceContours(sub,w,h);let best=null,ba=0;for(const l of loops){const a=Math.abs(polyArea(l));if(a>ba){ba=a;best=l;}}
+      let tot=0;for(const w2 of winOut)tot+=Math.abs(polyArea(w2.sm));
+      if(best&&ba>tot*0.8){let P=resample(best.map(q=>[q[0]+bb.x0,q[1]+bb.y0]),true,1.5);P=gsmooth(P,Math.max(1.5,2*SC),true);
+        const poly=simplifyLoop(P,Math.max(1.5,0.006*carLen));if(poly.length>=3){P=roundPoly(poly);winOut.splice(0,winOut.length,{sm:P,p:rdp(P,0.6),closed:true,len:P.length,window:true,protect:true,score:1e7});}}}}
   out.push(...winOut);anchors=anchors.concat(winOut);
   const winF=winOut.length?fillMask(winOut,lwv*1.4):null;
   // 5) Spiegel und Lichter: Form behalten, aber nur innerhalb der Karosserie und außerhalb der Fenster
@@ -2179,6 +2219,12 @@ function composeMin(list,mask){
   for(const p of carParts||[]){if(!p.mask)continue;
     if(p.k==='Mirror'&&p.s>0.35){const pts=partShape(p,{minA:0.012*carLen,S:16,T:1.1,snapF:0.004,hull:true});if(pts)shapes.push(...clipOpen(pts,winF,{mirror:true,score:5e6}));}
     else if(/light/i.test(p.k)&&p.s>0.25){const pts=partShape(p,{minA:0.012*carLen,S:22,T:1.4,snapF:0.004,hull:true});if(pts)shapes.push(...clipOpen(pts,winF,{light:true,score:4e6}));}}
+  {const ws=WH.slice().sort((a,b)=>a.cx-b.cx);let wbt=-1;for(const w of winOut)for(const q of w.sm)wbt=Math.max(wbt,q[1]);
+    for(let i=shapes.length-1;i>=0;i--){const sh=shapes[i];let cx=0,cy=0;for(const q of sh.sm){cx+=q[0];cy+=q[1];}cx/=sh.sm.length;cy/=sh.sm.length;
+      const mid=ws.length===2&&cx>ws[0].cx+ws[0].r*0.5&&cx<ws[1].cx-ws[1].r*0.5;
+      if(sh.light&&mid)shapes.splice(i,1); // Leuchte mitten auf der Tür = Türgriff → weg
+      else if(sh.mirror&&wbt>0&&cy>wbt+0.06*carLen)shapes.splice(i,1);
+      else if((sh.light&&!$('pLight').checked)||(sh.mirror&&!$('pMirror').checked))shapes.splice(i,1);}}
   // 6) Türfugen: lange, steile Linien des KI-Zeichners zwischen den Rädern
   const ws2=WH.slice().sort((a,b)=>a.cx-b.cx),xa=ws2.length===2?ws2[0].cx+ws2[0].r:-1e9,xb=ws2.length===2?ws2[1].cx-ws2[1].r:1e9;
   let wb=-1;for(const w of winOut)for(const q of w.sm)wb=Math.max(wb,q[1]);
@@ -2195,7 +2241,7 @@ function composeMin(list,mask){
       {const st=Math.max(4,Math.round(0.012*carLen/1.5));const hz=i=>{const a=P[Math.max(0,i-st)],b=P[Math.min(P.length-1,i+st)];const dx=b[0]-a[0],dy=b[1]-a[1];return Math.abs(dy)<0.6*Math.hypot(dx,dy);};
         let a=0,b=P.length-1;while(a<b&&hz(a))a++;while(b>a&&hz(b))b--;if(b-a<minRun)continue;if(a>0||b<P.length-1){P=P.slice(a,b+1);L=0;steep=0;y0=1e9;y1=-1e9;mx=0;for(let i=1;i<P.length;i++){const dx=P[i][0]-P[i-1][0],dy=P[i][1]-P[i-1][1];L+=Math.hypot(dx,dy);steep+=Math.abs(dy);}for(const q of P){y0=Math.min(y0,q[1]);y1=Math.max(y1,q[1]);mx+=q[0];}mx/=P.length;}}
       if(steep/Math.max(1,L)>0.62&&y1-y0>carH*0.2&&mx>xa&&mx<xb&&(wb<0||y1>wb+carH*0.1))doors.push({sm:P,closed:false,door:true,score:3e6+L,len:P.length,mx,fromPart:!!c.fromPart});}}
-  doors.sort((a,b)=>(a.fromPart-b.fromPart)||(b.len-a.len));{const kd=[];for(const d of doors){if(kd.length>=3)break;if(kd.every(k=>Math.abs(k.mx-d.mx)>0.06*carLen))kd.push(d);}doors=kd.filter(d=>!erased(d));}
+  doors.sort((a,b)=>(a.fromPart-b.fromPart)||(b.len-a.len));{const kd=[];for(const d of doors){if(kd.length>=+$('maxDoors').value)break;if(kd.every(k=>Math.abs(k.mx-d.mx)>0.06*carLen))kd.push(d);}doors=$('pDoor').checked?kd.filter(d=>!erased(d)):[];}
   // 7) Enden anschließen: in Laufrichtung bis zur ersten Linie verlängern (oder kürzen), genau auf deren Mitte enden
   const attach=(c,idx,maxRay,maxNear,pref)=>{let P=c.sm.slice();
     for(const atStart of [true,false]){const n=P.length,Eq=atStart?P[0]:P[n-1];
@@ -2840,12 +2886,12 @@ window.addEventListener('keydown',ev=>{
 
 /* ================= Regler ================= */
 const fmt={struct2:v=>v==0?'aus':(+v).toFixed(1),calmD:v=>v==0?'aus':(+v).toFixed(1),dock:v=>v==0?'aus':v,res:v=>v+' px',maxLines:v=>v>=200?'alle':v,hi:v=>v,calm:v=>v==0?'aus':v,sigma:v=>(+v).toFixed(1),lo:v=>v+' %',weak:v=>v==0?'aus':v,dup:v=>v==0?'aus':v+' px',
-  gap:v=>v==0?'aus':v+' px',spur:v=>v==0?'aus':v+' px',minLen:v=>v==0?'aus':v+' px',thick:v=>(+v).toFixed(1)+' px',curve:v=>v==0?'aus':v,straight:v=>(+v).toFixed(1),brush:v=>v+' px'};
+  gap:v=>v==0?'aus':v+' px',spur:v=>v==0?'aus':v+' px',minLen:v=>v==0?'aus':v+' px',thick:v=>(+v).toFixed(1)+' px',curve:v=>v==0?'aus':v,straight:v=>(+v).toFixed(1),brush:v=>v+' px',archGap:v=>v==0?'auto':v+' %',winGap:v=>(v/10).toFixed(1)+' %',maxDoors:v=>v};
 for(const k in fmt){const el=$(k),o=$(k+'O');const upd=()=>o.textContent=fmt[k](el.value);upd();
   el.addEventListener('input',()=>{upd();if(k==='brush')return;
     document.querySelectorAll('[data-preset]').forEach(x=>x.setAttribute('aria-pressed','false'));
     if(k==='res'){clearTimeout(el._t);el._t=setTimeout(()=>{setupRes(false,true);refreshAll();},350);}else if(k==='hi'||k==='lo'||k==='maxLines'||k==='weak')schedule();else schedule();});}
-for(const k of ['largest','autoOn','struct','ground','outlineOn','valleyOn','shadowOn','connectAll','detailLoops','cleanWin'])$(k).addEventListener('change',schedule);
+for(const k of ['largest','autoOn','struct','ground','outlineOn','valleyOn','shadowOn','connectAll','detailLoops','cleanWin','winOne','noAntenna','pWin','pDoor','pArch','pLight','pMirror'])$(k).addEventListener('change',schedule);
 $('aiOn').addEventListener('change',()=>{if(img)loadSrc(img.src,false);});
 $('teedOn').addEventListener('change',()=>{if($('teedOn').checked)refreshAll();else schedule();});
 $('darkBoost').addEventListener('change',()=>refreshAll());
