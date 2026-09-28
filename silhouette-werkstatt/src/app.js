@@ -66,6 +66,7 @@ async function startPipeline(im,g,demo){
   if(g!==gen)return;
   setProgress(3,'Zeichnung wird erstellt …');await nextFrame();
   currentMask();tmark('mask');await nextFrame(); // in Etappen rechnen, damit die Seite nicht hängt
+  try{windowItems();}catch(e){}await nextFrame();
   run();tmark('run');fitView();
   pipeBusy=false;setProgress(0);render();
   if(g===gen&&claudeClient()){claudeIdentify(g).then(()=>claudeReview(g,false));}
@@ -744,6 +745,17 @@ function boxWH(a,w,h,r){
 }
 /* Farb-Guided-Filter (He et al.): zieht die grobe KI-Maske exakt an die Bildkanten */
 function guidedColor(Ir,Ig,Ib,p,w,h,r,eps){
+  // „Fast Guided Filter“ (He & Sun 2015): Koeffizienten auf halber Auflösung, Ergebnis auf voller – gleiche Kanten, ~4× schneller
+  const s=(w*h>120000&&r>=4)?2:1;if(s===1)return guidedCoef(Ir,Ig,Ib,p,w,h,r,eps,true);
+  const w2=Math.ceil(w/s),h2=Math.ceil(h/s),n2=w2*h2,dn=a=>{const o=new Float32Array(n2);for(let y=0;y<h2;y++)for(let x=0;x<w2;x++){let t=0,c=0;for(let dy=0;dy<s;dy++)for(let dx=0;dx<s;dx++){const yy=y*s+dy,xx=x*s+dx;if(yy<h&&xx<w){t+=a[yy*w+xx];c++;}}o[y*w2+x]=t/c;}return o;};
+  const C=guidedCoef(dn(Ir),dn(Ig),dn(Ib),dn(p),w2,h2,Math.max(1,Math.round(r/s)),eps,false),q=new Float32Array(w*h);
+  for(let y=0;y<h;y++){const v=(y+0.5)/s-0.5,iy=Math.max(0,Math.min(h2-2,Math.floor(v))),fy=Math.min(1,Math.max(0,v-iy));
+    for(let x=0;x<w;x++){const u=(x+0.5)/s-0.5,ix=Math.max(0,Math.min(w2-2,Math.floor(u))),fx=Math.min(1,Math.max(0,u-ix)),k=iy*w2+ix;
+      const L=A=>(A[k]*(1-fx)+A[k+1]*fx)*(1-fy)+(A[k+w2]*(1-fx)+A[k+w2+1]*fx)*fy,i=y*w+x;
+      q[i]=L(C.Ar)*Ir[i]+L(C.Ag)*Ig[i]+L(C.Ab)*Ib[i]+L(C.Bm);}}
+  return q;
+}
+function guidedCoef(Ir,Ig,Ib,p,w,h,r,eps,full){
   const bx=a=>boxWH(a,w,h,r),n=w*h,mul=(a,b)=>{const o=new Float32Array(n);for(let i=0;i<n;i++)o[i]=a[i]*b[i];return o;};
   const mr=bx(Ir),mg=bx(Ig),mb=bx(Ib),mp=bx(p);
   const rr=bx(mul(Ir,Ir)),rg=bx(mul(Ir,Ig)),rb=bx(mul(Ir,Ib)),gg=bx(mul(Ig,Ig)),gb=bx(mul(Ig,Ib)),bb=bx(mul(Ib,Ib));
@@ -756,7 +768,7 @@ function guidedColor(Ir,Ig,Ib,p,w,h,r,eps){
     const det=s11*i11+s12*i12+s13*i13||1e-12;
     const a1=(i11*c1+i12*c2+i13*c3)/det,a2=(i12*c1+i22*c2+i23*c3)/det,a3=(i13*c1+i23*c2+i33*c3)/det;
     ar[i]=a1;ag[i]=a2;ab[i]=a3;b[i]=mp[i]-a1*mr[i]-a2*mg[i]-a3*mb[i];}
-  const Ar=bx(ar),Ag=bx(ag),Ab=bx(ab),Bm=bx(b),q=new Float32Array(n);
+  const Ar=bx(ar),Ag=bx(ag),Ab=bx(ab),Bm=bx(b);if(!full)return {Ar,Ag,Ab,Bm};const q=new Float32Array(n);
   for(let i=0;i<n;i++)q[i]=Ar[i]*Ir[i]+Ag[i]*Ig[i]+Ab[i]*Ib[i]+Bm[i];
   return q;
 }
@@ -1652,6 +1664,10 @@ function ptIndex(items,step){ // Raster aller Linienpunkte für schnelle Abstand
       for(let j=0;j<arr.length;j+=3){if(skip&&skip(arr[j]))continue;const d=Math.hypot(arr[j+1]-q[0],arr[j+2]-q[1]);if(d<bd){bd=d;bp=[arr[j+1],arr[j+2]];bi=arr[j];}}}
     return bp?{d:bd,p:bp,i:bi}:null;}};
 }
+function smoothOpen(P,sig){ // Gauß-Glättung einer offenen Linie (Enden werden nicht mit dem anderen Ende vermischt)
+  const n=P.length,r=Math.ceil(sig*2.5),k=[];for(let j=-r;j<=r;j++)k.push(Math.exp(-j*j/(2*sig*sig)));
+  return P.map((_,i)=>{let x=0,y=0,s=0;for(let j=-r;j<=r;j++){const t=i+j;if(t<0||t>=n)continue;const w=k[j+r];x+=P[t][0]*w;y+=P[t][1]*w;s+=w;}return [x/s,y/s];});
+}
 function runsOf(P,keep,closed){ // zusammenhängende Stücke, in denen keep[i] gilt
   const n=P.length,runs=[];if(keep.every(k=>k))return closed?[{pts:P,closed:true}]:[{pts:P,closed:false}];
   let s0=closed?keep.indexOf(false):-1,cur=[];
@@ -1756,7 +1772,10 @@ function composeMin(list,mask){
   const outl=[];
   for(const r of runsOf(bl,keep,true)){let P=r.pts;if(P.length<Math.max(10,20*SC)&&!r.closed)continue;
     if(!r.closed){const k=Math.min(P.length-1,6),s=snapEnd(P[0],P[k]),e=snapEnd(P[P.length-1],P[P.length-1-k]);
-      if(s)P=[s].concat(P);if(e)P=P.concat([e]);}
+      if(s)P=[s].concat(P);if(e)P=P.concat([e]);
+      // unten (Schweller, Stoßstangen-Unterkante) stört oft Schatten → dort kräftiger glätten, Enden bleiben exakt
+      if(WH.length&&P.length>20){const wy=Math.min(...WH.map(w=>w.cy)),rr=WH[0].r,n=P.length,S2=smoothOpen(P,Math.max(3,0.02*carLen/1.5)),t=Math.max(5,Math.round(0.02*carLen/1.5));
+        P=P.map((q,i)=>{let w=Math.min(1,Math.max(0,(q[1]-(wy-0.3*rr))/(0.4*rr)));w*=Math.min(1,Math.min(i,n-1-i)/t);return [q[0]*(1-w)+S2[i][0]*w,q[1]*(1-w)+S2[i][1]*w];});}}
     outl.push(mkLine(P,r.closed,1e8,{outline:true,sm:P}));}
   out.push(...outl);
   // Radlauf-Bogen + kurze Stege hinunter zum Reifen (hält den Reifen fest)
