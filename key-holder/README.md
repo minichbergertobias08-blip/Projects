@@ -1,12 +1,9 @@
-# Key Holder
+# Key Holder (Windows)
 
-Hält eine Taste dauerhaft gedrückt, solange aktiv.
+Hält eine Taste dauerhaft gedrückt, solange aktiv. Kein Python nötig.
 
-```
-pip install pynput
-python key_holder.py
-```
+1. `KeyHolder.exe` starten
+2. Taste eintragen (`w`, `space`, `shift`, `ctrl`, `f1`, `up`, `lmb` = linke Maustaste, …)
+3. **F8** oder Button = Start/Stop
 
-- Taste eintragen (`w`, `space`, `shift`, `up`, …)
-- **F8** oder Button = Start/Stop
-- Als .exe (Windows): `pip install pyinstaller && pyinstaller --onefile --noconsole key_holder.py`
+Neu bauen: `x86_64-w64-mingw32-gcc -O2 -s -mwindows key_holder.c -o KeyHolder.exe`
